@@ -44,6 +44,12 @@ export function ballCap(alive: number): number {
   return alive >= 4 ? 5 : alive === 3 ? 4 : 3;
 }
 
+/**
+ * A ball only counts as "yours" (it can collect crates) while you were the last to touch it AND it has not
+ * touched another ball since, for at most OWNER_TIME seconds. So crates are won with direct, aimed shots.
+ */
+export const OWNER_TIME = 5;
+
 /** Smash: a swing that hits any incoming ball within reach in front of the paddle. */
 export const SMASH_WINDOW = 0.2;
 export const SMASH_CD = 0.9;

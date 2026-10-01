@@ -146,20 +146,30 @@ A "ball director" decides. It starts with 2 balls. Every 9 seconds without a goa
 The cap depends on who is left: 5 balls with 4 players, 4 with 3, 3 with 2. Serves are spaced out so two
 balls never pop out at once.
 
+### Goals, eliminations and the winner
+
+- An eliminated player's goal is sealed by a cold electric-blue force field (a shield uses the same field
+  in the owner's colour, so a closed goal always reads as closed). Balls that hit it give a soft pulse.
+- When the match ends the camera moves in front of the winner's goal, the scene dims, a spotlight lands on the
+  winner (who hops) and confetti falls around them. On wide screens the results panel sits on the left so
+  the winner stays clear.
+- Goal lines and lives labels carry each player's colour; the floor itself is not tinted.
+
 ### Items guide
 
 *Items & how to play* (main menu and pause screen) shows a looping animation for every item and for smash and grabbing crates.
 
 ### Item crates
 
-Crates show what is inside. **Only a ball you touched last can collect one**, so aim your shots at
-the crate you want. You hold one item at a time (a new one replaces it) and use it when you choose:
+Crates show what is inside. **Only a ball you hit yourself can collect one**: a ball stops being yours when
+it touches another ball, or after 5 seconds. The ball's colour shows who owns it, so what you see is what
+can collect. Aim your own shots at the crate you want. You hold one item at a time (a new one replaces it) and use it when you choose:
 
 | Item | Effect |
 |---|---|
-| Shield | seals your goal for 6 s (save it for a ball you cannot reach) |
+| Shield | an energy field in your colour seals your goal for 6 s (save it for a ball you cannot reach). A bright strip burns down with the time left, and the field flickers in the last 1.5 s |
 | Big Paddle | paddle 60% longer for 10 s |
-| Freeze | everyone else moves at less than half speed for 4 s |
+| Freeze | everyone else moves at less than half speed for 4 s: their paddles get an ice shell with drifting frost, their characters shiver, and a freeze wave runs across the field |
 | Split Shot | your next hit splits into 3 balls |
 | Extra Life | instant +1 life (or a short shield if you are at full lives) |
 
@@ -172,15 +182,16 @@ On your last life your paddle is 20% longer and smash recharges 50% faster.
 ## Performance
 
 - The whole game simulation costs about 10 microseconds per step (120 steps per second, 4 players,
-  7 balls): roughly 1 ms of CPU per second of play. Unknown command: "test"
-
-
-Did you mean this?
-  npm test # Test a package
-To see a list of supported npm commands, run:
-  npm help prints this measurement.
+  7 balls): roughly 1 ms of CPU per second of play. `npm test` prints this measurement.
 - The hot collision code does not allocate memory, so there are no garbage-collection hiccups.
 - Particles cost nothing when none are alive.
+- **No mid-match shader compiles.** three.js compiles a shader the first time something is drawn, which
+  shows up as a stutter. The game builds everything that can appear mid-match (force fields, ice shells,
+  item badges, crates, balls, the winner spotlight) once at start-up, in the same render target the game
+  draws into. Measured in the browser: the previous version compiled 6 shaders during a shield, freeze
+  and elimination; now 0.
+- Elimination effects are deliberately light (a modest particle burst, short slow motion, one sound
+  instead of two stacked ones).
 - Adaptive resolution: if frames get slow (under ~40 fps) the render resolution steps down, and it
   steps back up when there is headroom. A strong GPU stays at full resolution.
 

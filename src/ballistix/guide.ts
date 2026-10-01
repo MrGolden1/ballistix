@@ -189,8 +189,8 @@ const demoSmash: Demo = (g, t) => {
 };
 
 const demoShield: Demo = (g, t) => {
-  scene(g, '#4cc9f0');
-  paddle(g, 70, 20, '#4cc9f0');
+  scene(g);
+  paddle(g, 70, 20, MINE);
   const on = t > 0.8 && t < 3.3;
   // the ball heads for the part of the goal the paddle cannot reach
   const k = seg(t, 0.0, 1.9);
@@ -203,9 +203,9 @@ const demoShield: Demo = (g, t) => {
   }
   if (on) {
     g.save();
-    g.fillStyle = 'rgba(76,201,240,0.28)';
+    g.fillStyle = 'rgba(255,138,31,0.30)';
     g.fillRect(GX0, GY - 22, GX1 - GX0, 22);
-    g.strokeStyle = 'rgba(160,230,255,0.8)';
+    g.strokeStyle = 'rgba(255,200,140,0.7)';
     g.lineWidth = 1;
     for (let x = GX0; x < GX1; x += 9) {
       g.beginPath();
@@ -214,7 +214,10 @@ const demoShield: Demo = (g, t) => {
       g.stroke();
     }
     g.restore();
-    timerBar(g, GX0, H - 8, GX1 - GX0, 1 - (t - 0.8) / 2.5, '#4cc9f0');
+    // the strip along the goal burns down with the remaining time
+    const left = 1 - (t - 0.8) / 2.5;
+    g.fillStyle = MINE;
+    g.fillRect(110 - ((GX1 - GX0) / 2) * Math.max(0.04, left), GY - 2, (GX1 - GX0) * Math.max(0.04, left), 4);
   }
   if (t > 0.3 && t < 1.0) drawBadge(g, 'shield', 98, 52 - seg(t, 0.3, 1) * 8, 24);
   ball(g, bx, by, BALL);
@@ -319,9 +322,9 @@ const demoLife: Demo = (g, t) => {
 };
 
 const CARDS: Card[] = [
-  { id: 'grab', title: 'GRAB ITEMS', color: '#ffd23f', demo: demoGrab, text: 'Hit a crate with a ball you touched last. The item appears above your character and in your panel. You hold one at a time (a new one replaces it) and use it with the item button.' },
+  { id: 'grab', title: 'GRAB ITEMS', color: '#ffd23f', demo: demoGrab, text: 'Hit a crate with a ball you just hit yourself. A ball stops being yours when it touches another ball (or after 5 seconds), so aim your own shots. The item appears above your character and in your panel; use it with the item button.' },
   { id: 'smash', title: 'SMASH', color: MINE, demo: demoSmash, text: 'Press smash as a ball gets close: the swing reaches in front of your paddle, so the ball does not have to touch it. A smashed ball flies much faster, in a straight line.' },
-  { id: 'shield', title: CRATE_INFO.shield.label, icon: 'shield', color: CRATE_INFO.shield.css, demo: demoShield, text: 'Seals your goal for 6 seconds. Keep it for a ball you cannot reach.' },
+  { id: 'shield', title: CRATE_INFO.shield.label, icon: 'shield', color: CRATE_INFO.shield.css, demo: demoShield, text: 'Seals your goal with an energy field in your colour for 6 seconds. The strip along the goal shows the time left, and the field flickers just before it ends. Keep it for a ball you cannot reach.' },
   { id: 'big', title: CRATE_INFO.big.label, icon: 'big', color: CRATE_INFO.big.css, demo: demoBig, text: 'A longer paddle for 10 seconds, so it covers more of your goal.' },
   { id: 'freeze', title: CRATE_INFO.freeze.label, icon: 'freeze', color: CRATE_INFO.freeze.css, demo: demoFreeze, text: 'Everyone else moves slowly for 4 seconds. You do not.' },
   { id: 'split', title: CRATE_INFO.split.label, icon: 'split', color: CRATE_INFO.split.css, demo: demoSplit, text: 'Your next hit splits into 3 balls. The two extra balls vanish after 10 seconds.' },

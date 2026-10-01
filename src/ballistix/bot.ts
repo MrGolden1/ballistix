@@ -125,7 +125,7 @@ export class Bot {
           use = !!threat && threat.t < 0.8;
           break;
         case 'freeze': // when a ball is heading at an opponent
-          use = sim.balls.some((b) => b.last === p.seat && b.hold <= 0);
+          use = sim.balls.some((b) => b.owner === p.seat && b.hold <= 0);
           break;
         case 'big':
           use = true;

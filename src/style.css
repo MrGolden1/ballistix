@@ -18,7 +18,10 @@ kbd { font: 700 11px var(--font); padding: 2px 6px; border-radius: 5px; backgrou
 
 /* ---------- screens & panels ---------- */
 .screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: flex-start; padding: 0 5vw; z-index: 10; }
-#pause, #results { justify-content: center; background: radial-gradient(ellipse at center, rgba(5, 8, 24, 0.55), rgba(5, 8, 24, 0.86)); backdrop-filter: blur(4px); }
+#pause { justify-content: center; background: radial-gradient(ellipse at center, rgba(5, 8, 24, 0.55), rgba(5, 8, 24, 0.86)); backdrop-filter: blur(4px); }
+/* Results: the panel sits on the left and the winner stays clear on the right (no blur over the scene). */
+#results { justify-content: flex-start; background: linear-gradient(90deg, rgba(5, 8, 24, 0.88) 0%, rgba(5, 8, 24, 0.6) 38%, rgba(5, 8, 24, 0) 62%); }
+@media (max-width: 900px), (max-aspect-ratio: 6/5) { #results { justify-content: center; background: rgba(5, 8, 24, 0.7); } }
 #menu { background: linear-gradient(90deg, rgba(5, 8, 24, 0.82) 0%, rgba(5, 8, 24, 0.5) 38%, rgba(5, 8, 24, 0) 62%); }
 .panel {
   width: min(430px, 100%);

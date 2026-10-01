@@ -31,7 +31,7 @@ function skipCountdown(sim: Sim): void {
 }
 
 function makeBall(x: number, y: number, vx: number, vy: number, speed = 9): Ball {
-  return { id: 9999, x, y, vx, vy, speed, boost: 0, last: -1, hold: 0, extra: false, ttl: Infinity, sinceHit: 0, hits: 0, dead: false };
+  return { id: 9999, x, y, vx, vy, speed, boost: 0, last: -1, owner: -1, ownerT: 0, hold: 0, extra: false, ttl: Infinity, sinceHit: 0, hits: 0, dead: false };
 }
 
 /** Replaces all balls with one ball (served balls will still arrive later). */
@@ -43,6 +43,14 @@ function putBall(sim: Sim, x: number, y: number, vx: number, vy: number, speed =
 
 function putCrate(sim: Sim, kind: CrateKind, x = 0, y = 0): void {
   sim.crates = [{ id: 77, x, y, kind, age: 0, ttl: 14, dead: false }];
+}
+
+/** Makes a seat the owner of a ball (as if its paddle had just hit it). */
+function own(b: Ball, seat: number): Ball {
+  b.last = seat;
+  b.owner = seat;
+  b.ownerT = 5;
+  return b;
 }
 
 /** Steps until `pred` matches an event (or the limit is reached) and returns whether it did. */
@@ -189,6 +197,8 @@ describe('collisions', () => {
     sim.players[0].s = sim.paddleLimit(sim.players[0].h);
     const b = putBall(sim, -3.5, H - 4, 0, 9);
     b.last = 1;
+    b.owner = 1;
+    b.ownerT = 5;
     expect(stepUntil(sim, (e) => e.t === 'goal' && e.seat === 0, 240)).toBe(true);
     expect(sim.players[0].lives).toBe(2);
     expect(sim.players[1].stats.scored).toBe(1);
@@ -336,7 +346,7 @@ describe('ball director', () => {
 });
 
 describe('items', () => {
-  it('only a ball you touched last collects a crate', () => {
+  it('only a ball with an owner collects a crate', () => {
     const sim = makeSim();
     skipCountdown(sim);
     putCrate(sim, 'shield');
@@ -344,22 +354,59 @@ describe('items', () => {
     sim.step(DT);
     expect(sim.crates).toHaveLength(1); // nobody owns that ball
 
-    sim.balls[0].last = 1;
+    sim.balls[0].owner = 1;
+    sim.balls[0].ownerT = 5;
     sim.step(DT);
     expect(sim.crates).toHaveLength(0);
     expect(sim.players[1].item).toBe('shield');
+  });
+
+  it('a ball that touched another ball loses its owner, so it cannot collect a crate', () => {
+    const sim = makeSim();
+    skipCountdown(sim);
+    putCrate(sim, 'shield', 3, 0);
+    const mine = own(makeBall(-3, 0, 6, 0), 1);
+    const other = makeBall(0, 0, -6, 0);
+    other.id = 4242;
+    sim.balls = [mine, other];
+    // The two balls meet head-on before the crate: ownership is gone, and the other ball can pass the crate.
+    for (let i = 0; i < 90; i++) sim.step(DT);
+    expect(mine.owner).toBe(-1);
+    expect(other.x).toBeGreaterThan(3.5); // it went right through the crate position
+    expect(sim.players[1].item).toBeNull();
+    expect(sim.crates).toHaveLength(1);
+  });
+
+  it('ownership also runs out after a few seconds', () => {
+    const sim = makeSim({ lives: 99 });
+    skipCountdown(sim);
+    const b = own(putBall(sim, 0, 0, 3, 2, 1), 1); // slow: it never reaches a paddle in 5 s
+    for (let i = 0; i < 120 * 4.9; i++) sim.step(DT);
+    expect(b.owner).toBe(1);
+    for (let i = 0; i < 120 * 0.4; i++) sim.step(DT);
+    expect(b.owner).toBe(-1);
+    expect(b.last).toBe(1); // goal credit is a separate thing and stays
+  });
+
+  it('a direct paddle hit makes the hitter the owner', () => {
+    const sim = makeSim();
+    skipCountdown(sim);
+    const b = putBall(sim, 0, H - 4, 0, 9);
+    expect(stepUntil(sim, (e) => e.t === 'paddle' && e.seat === 0, 240)).toBe(true);
+    expect(b.owner).toBe(0);
+    expect(b.ownerT).toBeGreaterThan(4.5);
   });
 
   it('items are held until used; a new pickup replaces the old one', () => {
     const sim = makeSim();
     skipCountdown(sim);
     putCrate(sim, 'big');
-    putBall(sim, 0, 0.5, 0, 0.0001).last = 1;
+    own(putBall(sim, 0, 0.5, 0, 0.0001), 1);
     sim.step(DT);
     expect(sim.players[1].item).toBe('big');
     expect(sim.players[1].fx.big).toBe(0);
     putCrate(sim, 'freeze');
-    putBall(sim, 0, 0.5, 0, 0.0001).last = 1;
+    own(putBall(sim, 0, 0.5, 0, 0.0001), 1);
     sim.step(DT);
     expect(sim.players[1].item).toBe('freeze');
   });
@@ -403,12 +450,12 @@ describe('items', () => {
     skipCountdown(sim);
     sim.players[1].lives = 2;
     putCrate(sim, 'life');
-    putBall(sim, 0, 0.5, 0, 0.0001).last = 1;
+    own(putBall(sim, 0, 0.5, 0, 0.0001), 1);
     sim.step(DT);
     expect(sim.players[1].lives).toBe(3);
     expect(sim.players[1].item).toBeNull();
     putCrate(sim, 'life');
-    putBall(sim, 0, 0.5, 0, 0.0001).last = 1;
+    own(putBall(sim, 0, 0.5, 0, 0.0001), 1);
     sim.step(DT);
     expect(sim.players[1].lives).toBe(3);
     expect(sim.players[1].fx.shield).toBeGreaterThan(0);

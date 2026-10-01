@@ -19,6 +19,7 @@ import {
   LAST_STAND_SCALE,
   LAST_STAND_SMASH_RATE,
   MAX_DEFLECT,
+  OWNER_TIME,
   PADDLE_ACCEL,
   PADDLE_BRAKE,
   PADDLE_CURVE,
@@ -97,8 +98,11 @@ export interface Ball {
   speed: number;
   /** Temporary extra speed from smashes; decays to 0. */
   boost: number;
-  /** Seat that touched the ball last, or -1. */
+  /** Seat that touched the ball last, or -1 (credit for goals). */
   last: number;
+  /** Seat that may collect crates with this ball, or -1: cleared by touching another ball or by time. */
+  owner: number;
+  ownerT: number;
   /** Serve hold time left (ball sits in the centre while > 0). */
   hold: number;
   /** Extra balls come from Split Shot: they never respawn and expire after `ttl`. */
@@ -387,6 +391,8 @@ export class Sim {
       speed,
       boost: 0,
       last: -1,
+      owner: -1,
+      ownerT: 0,
       hold: 0,
       extra: false,
       ttl: Infinity,
@@ -417,6 +423,10 @@ export class Sim {
         continue;
       }
       b.sinceHit += dt;
+      if (b.ownerT > 0) {
+        b.ownerT -= dt;
+        if (b.ownerT <= 0) b.owner = -1;
+      }
       // Anti-stall: a ball that nobody touches slowly speeds up.
       if (b.sinceHit > 6) b.speed = Math.min(BALL_SPEED_MAX, b.speed + 1.5 * dt);
       if (b.boost > 0) b.boost = Math.max(0, b.boost - BOOST_DECAY * dt);
@@ -555,6 +565,8 @@ export class Sim {
       b.speed = Math.min(BALL_SPEED_MAX, b.speed + BALL_SPEED_PER_HIT);
       this.setSpeed(b);
       b.last = p.seat;
+      b.owner = p.seat;
+      b.ownerT = OWNER_TIME;
       b.sinceHit = 0;
       b.hits++;
       p.stats.saves++;
@@ -580,6 +592,8 @@ export class Sim {
     b.vx = dirX * total;
     b.vy = dirY * total;
     b.last = p.seat;
+    b.owner = p.seat;
+    b.ownerT = OWNER_TIME;
     b.sinceHit = 0;
     b.hits++;
     p.stats.saves++;
@@ -590,7 +604,7 @@ export class Sim {
       p.fx.split = 0;
       for (const da of [-SPLIT_SPREAD, SPLIT_SPREAD]) {
         const a = Math.atan2(dirY, dirX) + da;
-        const extra = this.newBall(b.x, b.y, a, total, { speed: b.speed, boost: b.boost, last: p.seat, extra: true, ttl: SPLIT_BALL_LIFE, sinceHit: 0 });
+        const extra = this.newBall(b.x, b.y, a, total, { speed: b.speed, boost: b.boost, last: p.seat, owner: p.seat, ownerT: OWNER_TIME, extra: true, ttl: SPLIT_BALL_LIFE, sinceHit: 0 });
         this.balls.push(extra);
       }
       this.events.push({ t: 'split', seat: p.seat, x: b.x, y: b.y });
@@ -637,6 +651,9 @@ export class Sim {
         c.y += ny * push;
         const rel = (c.vx - a.vx) * nx + (c.vy - a.vy) * ny;
         if (rel >= 0) continue;
+        // Touching another ball breaks ownership: neither ball can collect a crate until a paddle hits it again.
+        a.owner = c.owner = -1;
+        a.ownerT = c.ownerT = 0;
         // Equal masses: exchange the normal components, keep each ball's own speed.
         a.vx += rel * nx;
         a.vy += rel * ny;
@@ -726,14 +743,14 @@ export class Sim {
     }
   }
 
-  /** Only a ball that a player touched last can collect a crate: aim your shots at it. */
+  /** Only a ball its owner hit directly (and that has not touched another ball) can collect a crate. */
   private collideCrates(b: Ball): void {
-    if (b.last < 0 || !this.players[b.last].alive) return;
+    if (b.owner < 0 || !this.players[b.owner].alive) return;
     for (const c of this.crates) {
       if (c.dead) continue;
       if (Math.hypot(b.x - c.x, b.y - c.y) >= BALL_R + CRATE_R) continue;
       c.dead = true;
-      const p = this.players[b.last];
+      const p = this.players[b.owner];
       p.stats.crates++;
       let replaced: ItemKind | null = null;
       if (c.kind === 'life') {

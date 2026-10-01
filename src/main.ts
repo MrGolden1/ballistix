@@ -437,7 +437,7 @@ class App {
         // Smooth slow-motion after an elimination (offline only, online everyone shares one clock).
         if (this.slowmo > 0 && !this.net) {
           this.slowmo -= dt;
-          this.timeScale += (0.3 - this.timeScale) * Math.min(1, dt * 12);
+          this.timeScale += (0.55 - this.timeScale) * Math.min(1, dt * 12);
         } else {
           this.timeScale += (1 - this.timeScale) * Math.min(1, dt * 4);
         }
@@ -685,8 +685,8 @@ class App {
         sfx('ball');
         break;
       case 'goal': {
-        sfx('goal');
-        this.rumbleSeat(ev.seat, 'goal');
+        if (ev.lives > 0) sfx('goal'); // an elimination plays its own sound
+        if (ev.lives > 0) this.rumbleSeat(ev.seat, 'goal');
         // The lives counter above the goal jumps; a short "-1" rises from the goal.
         if (live) this.popAtGoal(ev.seat, '-1', SEATS[ev.seat].css, true);
         break;
@@ -694,7 +694,7 @@ class App {
       case 'eliminated':
         this.eliminated.push(ev.seat);
         this.rumbleSeat(ev.seat, 'out');
-        this.slowmo = 0.9;
+        this.slowmo = 0.45;
         this.view.shake(0.3);
         sfx('elim');
         if (live) this.popAtGoal(ev.seat, `${SEATS[ev.seat].name.toUpperCase()} IS OUT`, SEATS[ev.seat].css, true);
@@ -721,7 +721,10 @@ class App {
           sfx('win');
           this.hud.countdown(ev.seat >= 0 ? `${SEATS[ev.seat].name} wins!` : 'Draw');
           window.setTimeout(() => {
-            if (this.mode === 'match' && this.sim.phase === 'over') this.ui.showResults(this.sim, this.eliminated, this.net?.role === 'guest');
+            if (this.mode === 'match' && this.sim.phase === 'over') {
+              this.hud.hide();
+              this.ui.showResults(this.sim, this.eliminated, this.net?.role === 'guest');
+            }
           }, 1800);
         }
         break;

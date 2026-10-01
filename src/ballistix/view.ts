@@ -15,15 +15,16 @@ import {
   SERVE_HOLD,
   SIDES,
   SMASH_BOOST,
+  FX_SHIELD,
   WALL_R,
   PADDLE_CURVE,
   SMASH_REACH,
   CRATE_INFO,
   type CrateKind,
 } from './config';
-import type { Ball, Crate, Sim, SimEvent } from './sim';
+import type { Ball, Crate, PlayerState, Sim, SimEvent } from './sim';
 import { Particles } from './particles';
-import { drawBadge } from './icons';
+import { drawBadge, itemIconURL } from './icons';
 
 const FOV = 38;
 const WALL_HEIGHT = 1.0;
@@ -70,32 +71,6 @@ function floorTexture(): THREE.CanvasTexture {
     g.fillStyle = rg;
     g.fillRect(0, 0, N, N);
 
-    // goal zones, drawn for the bottom seat then rotated for the others
-    for (let i = 0; i < 4; i++) {
-      g.save();
-      g.translate(N / 2, N / 2);
-      g.rotate((-i * Math.PI) / 2);
-      g.translate(-N / 2, -N / 2);
-      const col = SEATS[i].color;
-      const zoneW = 2 * GOAL_HALF * s;
-      const zoneH = 4.2 * s;
-      const x0 = N / 2 - zoneW / 2;
-      const y0 = N - zoneH;
-      const lg = g.createLinearGradient(0, N, 0, y0);
-      lg.addColorStop(0, cssColor(col, 0.55));
-      lg.addColorStop(1, cssColor(col, 0));
-      g.fillStyle = lg;
-      g.fillRect(x0, y0, zoneW, zoneH);
-      g.strokeStyle = cssColor(col, 0.7);
-      g.lineWidth = 5;
-      g.beginPath();
-      g.moveTo(x0, N);
-      g.lineTo(x0, y0 + 0.8 * s);
-      g.moveTo(x0 + zoneW, N);
-      g.lineTo(x0 + zoneW, y0 + 0.8 * s);
-      g.stroke();
-      g.restore();
-    }
     g.strokeStyle = 'rgba(255,255,255,0.18)';
     g.lineWidth = 10;
     g.strokeRect(5, 5, N - 10, N - 10);
@@ -120,36 +95,6 @@ function netTexture(color: number): THREE.CanvasTexture {
       g.lineTo(256, y);
       g.stroke();
     }
-  });
-}
-
-function hexTexture(): THREE.CanvasTexture {
-  return canvasTexture(256, 128, (g) => {
-    g.clearRect(0, 0, 256, 128);
-    g.strokeStyle = 'rgba(255,255,255,0.95)';
-    g.lineWidth = 3;
-    const r = 16;
-    for (let row = -1; row < 10; row++) {
-      for (let col = -1; col < 18; col++) {
-        const x = col * r * 1.5;
-        const y = row * r * 1.732 + (col % 2 ? r * 0.866 : 0);
-        g.beginPath();
-        for (let k = 0; k < 6; k++) {
-          const a = (Math.PI / 3) * k;
-          const px = x + r * Math.cos(a);
-          const py = y + r * Math.sin(a);
-          if (k === 0) g.moveTo(px, py);
-          else g.lineTo(px, py);
-        }
-        g.closePath();
-        g.stroke();
-      }
-    }
-    const grad = g.createLinearGradient(0, 0, 0, 128);
-    grad.addColorStop(0, 'rgba(255,255,255,0.25)');
-    grad.addColorStop(1, 'rgba(255,255,255,0.0)');
-    g.fillStyle = grad;
-    g.fillRect(0, 0, 256, 128);
   });
 }
 
@@ -213,8 +158,10 @@ interface SeatObj {
   char: THREE.Group;
   lean: THREE.Group;
   barrier: Barrier;
-  shield: THREE.Mesh;
-  shieldMat: THREE.MeshBasicMaterial;
+  /** Translucent ice shell that wraps the paddle while its owner is frozen. */
+  ice: THREE.Mesh;
+  iceMat: THREE.MeshStandardMaterial;
+  skin: THREE.MeshStandardMaterial;
   stripMat: THREE.MeshStandardMaterial;
   bayMat: THREE.MeshStandardMaterial;
   light: THREE.PointLight;
@@ -222,7 +169,6 @@ interface SeatObj {
   squash: number;
   fall: number;
   flash: number;
-  shieldFlash: number;
   /** 1 right after pressing smash, decays to 0 over the swing. */
   swing: number;
   /** Draw the swing-reach arc on the next frame. */
@@ -298,23 +244,33 @@ const tmpColor = new THREE.Color();
 const TINT = new THREE.Color();
 const ROLL_AXIS = new THREE.Vector3();
 const PROJ = new THREE.Vector3();
+const HEMI_BASE = 1.1;
+const SUN_BASE = 2.6;
 
 /** Darker copy of a colour: additive particles add up fast, so hit effects use dimmed colours. */
 function dim(c: THREE.Color, k: number): THREE.Color {
   return c.multiplyScalar(k);
 }
 
-/** The electric force field: a shader sheet plus a few jittering lightning bolts between the goal posts. */
+/**
+ * The force field that closes a goal. One effect, two looks:
+ *  - eliminated player: cold, crackling electric blue, permanent;
+ *  - shield item: the owner's colour, steadier; a strip along the goal burns down with the remaining time
+ *    and the field flickers in its last 1.5 seconds.
+ */
 interface Barrier {
   group: THREE.Group;
   mat: THREE.ShaderMaterial;
   bolts: THREE.Line[];
   /** Glowing emitter strip on the floor: keeps the field readable from any camera angle. */
   strip: THREE.MeshBasicMaterial;
+  stripMesh: THREE.Mesh;
   /** 0..1 how far it has powered up. */
   on: number;
-  /** 1 on a ball hit, fades out. */
+  /** Set on a ball hit, fades out quickly. */
   flash: number;
+  /** True for the eliminated-player look. */
+  electric: boolean;
   nextBolt: number;
 }
 
@@ -323,21 +279,22 @@ const FLY_TIME = 0.55;
 const FLY_TO = new THREE.Vector3();
 const SPARK_POS = new THREE.Vector3();
 
-function makeBarrier(horizontal: boolean): Barrier {
+function makeBarrier(seat: number): Barrier {
   const group = new THREE.Group();
-  if (!horizontal) group.rotation.y = Math.PI / 2;
+  const n = SIDES[seat].n;
+  group.rotation.y = Math.atan2(-n.x, -n.y);
   const mat = new THREE.ShaderMaterial({
     transparent: true,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
     side: THREE.DoubleSide,
-    uniforms: { uTime: { value: 0 }, uOn: { value: 0 }, uFlash: { value: 0 }, uColor: { value: new THREE.Color(0x3fa9ff) } },
+    uniforms: { uTime: { value: 0 }, uOn: { value: 0 }, uFlash: { value: 0 }, uCalm: { value: 0 }, uColor: { value: new THREE.Color(0x3fa9ff) } },
     vertexShader: /* glsl */ `
       varying vec2 vUv;
       void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
     `,
     fragmentShader: /* glsl */ `
-      uniform float uTime; uniform float uOn; uniform float uFlash; uniform vec3 uColor;
+      uniform float uTime; uniform float uOn; uniform float uFlash; uniform float uCalm; uniform vec3 uColor;
       varying vec2 vUv;
       float hash(float n) { return fract(sin(n) * 43758.5453); }
       float noise(vec2 p) {
@@ -352,9 +309,10 @@ function makeBarrier(horizontal: boolean): Barrier {
         float n2 = noise(vec2(vUv.x * 31.0 + t * 6.0, vUv.y * 9.0 - t * 7.0));
         float arc = smoothstep(0.07, 0.0, abs(sin(vUv.y * 9.0 + n1 * 6.0 + t * 6.0)));
         arc += 0.6 * smoothstep(0.05, 0.0, abs(sin(vUv.y * 15.0 - n2 * 5.0 - t * 9.0)));
-        float hum = 0.12 + 0.05 * sin(t * 40.0 + vUv.x * 25.0);
-        float a = ((hum + arc) * uOn + uFlash * 0.7) * fade;
-        vec3 col = mix(uColor, vec3(1.0), clamp(arc * 0.6 + uFlash, 0.0, 1.0));
+        arc *= mix(1.0, 0.45, uCalm);
+        float hum = mix(0.12 + 0.05 * sin(t * 40.0 + vUv.x * 25.0), 0.48 + 0.05 * sin(t * 8.0 + vUv.x * 10.0), uCalm);
+        float a = ((hum + arc) * uOn + uFlash * 0.2) * fade;
+        vec3 col = mix(uColor, vec3(1.0), clamp(arc * 0.5 + uFlash * 0.35 + uCalm * 0.3, 0.0, 1.0));
         gl_FragColor = vec4(col * a, a);
       }
     `,
@@ -362,6 +320,10 @@ function makeBarrier(horizontal: boolean): Barrier {
   const sheet = new THREE.Mesh(new THREE.PlaneGeometry(2 * GOAL_HALF, 1.5), mat);
   sheet.position.y = 0.75;
   group.add(sheet);
+  const floorPanel = new THREE.Mesh(new THREE.PlaneGeometry(2 * GOAL_HALF, 1.5), mat);
+  floorPanel.rotation.x = -Math.PI / 2; // its "up" runs into the arena
+  floorPanel.position.set(0, 0.03, -0.75);
+  group.add(floorPanel);
   const bolts: THREE.Line[] = [];
   for (let i = 0; i < 3; i++) {
     const geo = new THREE.BufferGeometry();
@@ -371,11 +333,11 @@ function makeBarrier(horizontal: boolean): Barrier {
     bolts.push(line);
   }
   const strip = new THREE.MeshBasicMaterial({ color: 0x9fe2ff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
-  const stripMesh = new THREE.Mesh(new THREE.BoxGeometry(2 * GOAL_HALF, 0.06, 0.22), strip);
-  stripMesh.position.y = 0.04;
+  const stripMesh = new THREE.Mesh(new THREE.BoxGeometry(2 * GOAL_HALF, 0.06, 0.34), strip);
+  stripMesh.position.set(0, 0.05, -0.4);
   group.add(stripMesh);
   group.visible = false;
-  return { group, mat, bolts, strip, on: 0, flash: 0, nextBolt: 0 };
+  return { group, mat, bolts, strip, stripMesh, on: 0, flash: 0, electric: false, nextBolt: 0 };
 }
 const WHITE = new THREE.Color(0xffffff);
 const WHITE_HOT = new THREE.Color(0xfff4d6);
@@ -387,10 +349,17 @@ const ICE = new THREE.Color(0x9bf6ff);
 export class View {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
-  readonly camera = new THREE.PerspectiveCamera(FOV, 1, 8, 160);
+  readonly camera = new THREE.PerspectiveCamera(FOV, 1, 3, 160);
   private composer: EffectComposer;
   private bloom: UnrealBloomPass;
   private particles = new Particles(5000);
+  private hemi!: THREE.HemisphereLight;
+  private sun!: THREE.DirectionalLight;
+  private spot!: THREE.SpotLight;
+  /** The match winner (the camera and lights focus on their side), or -1; `win` eases 0..1. */
+  private winSeat = -1;
+  private win = 0;
+  private winPos = new THREE.Vector3();
   private seats: SeatObj[] = [];
   private balls = new Map<number, BallObj>();
   private crates = new Map<number, CrateObj>();
@@ -464,13 +433,16 @@ export class View {
 
     this.resize();
     addEventListener('resize', () => this.resize());
+    this.warmUp();
   }
 
   // --- construction -------------------------------------------------------------------
 
   private buildLights(): void {
-    this.scene.add(new THREE.HemisphereLight(0xc7d6ff, 0x1a1d38, 1.1));
-    const sun = new THREE.DirectionalLight(0xfff1dd, 2.6);
+    this.hemi = new THREE.HemisphereLight(0xc7d6ff, 0x1a1d38, HEMI_BASE);
+    this.scene.add(this.hemi);
+    const sun = new THREE.DirectionalLight(0xfff1dd, SUN_BASE);
+    this.sun = sun;
     sun.position.set(-9, 20, 12);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
@@ -484,6 +456,10 @@ export class View {
     sun.shadow.bias = -0.0004;
     sun.shadow.normalBias = 0.03;
     this.scene.add(sun);
+    // Winner spotlight. It lives in the scene from the start (intensity 0): adding or removing a light
+    // later would make three.js recompile every material, which shows up as a stutter.
+    this.spot = new THREE.SpotLight(0xffffff, 0, 45, 0.4, 0.8, 2);
+    this.scene.add(this.spot, this.spot.target);
   }
 
   private buildArena(): void {
@@ -571,32 +547,17 @@ export class View {
       back.castShadow = true;
       this.scene.add(back);
 
-      const light = new THREE.PointLight(seat.color, 30, 16, 2);
-      light.position.set(side.w.x + out.x * 1.2, 2.2, side.w.y + out.y * 1.2);
+      // Lights the goal bay, not the playing field: short range, set back behind the goal line.
+      const light = new THREE.PointLight(seat.color, 16, 8, 2);
+      light.position.set(side.w.x + out.x * 2.4, 1.8, side.w.y + out.y * 2.4);
       this.scene.add(light);
 
       // electric force field that closes the goal of an eliminated player
-      const barrier = makeBarrier(horizontal);
+      const barrier = makeBarrier(i);
       barrier.group.position.set(side.w.x, 0, side.w.y);
       this.scene.add(barrier.group);
 
-      // power-up shield barrier
-      const shieldMat = new THREE.MeshBasicMaterial({
-        color: seat.color,
-        map: hexTexture(),
-        transparent: true,
-        opacity: 0.5,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-      });
-      const shield = new THREE.Mesh(new THREE.PlaneGeometry(2 * GOAL_HALF, 1.7), shieldMat);
-      shield.position.set(side.w.x, 0.85, side.w.y);
-      if (!horizontal) shield.rotation.y = Math.PI / 2;
-      shield.visible = false;
-      this.scene.add(shield);
-
-      this.seatPlaceholders[i] = { bayMat, stripMat, light, barrier, shield, shieldMat };
+      this.seatPlaceholders[i] = { bayMat, stripMat, light, barrier };
     }
 
     // corner pillars
@@ -616,7 +577,7 @@ export class View {
     }
   }
 
-  private seatPlaceholders: Record<number, { bayMat: THREE.MeshStandardMaterial; stripMat: THREE.MeshStandardMaterial; light: THREE.PointLight; barrier: Barrier; shield: THREE.Mesh; shieldMat: THREE.MeshBasicMaterial }> = {};
+  private seatPlaceholders: Record<number, { bayMat: THREE.MeshStandardMaterial; stripMat: THREE.MeshStandardMaterial; light: THREE.PointLight; barrier: Barrier }> = {};
 
   private buildBackdrop(): void {
     const mat = new THREE.MeshStandardMaterial({ color: 0x232a55, roughness: 0.9, flatShading: true });
@@ -645,6 +606,10 @@ export class View {
     const capB = new THREE.Mesh(capGeo, barMat);
     for (const m of [cyl, capA, capB]) m.castShadow = true;
     bar.add(cyl, capA, capB);
+    const iceMat = new THREE.MeshStandardMaterial({ color: 0xcdf7ff, emissive: 0x4fc3ff, emissiveIntensity: 0.55, roughness: 0.12, transparent: true, opacity: 0, depthWrite: false });
+    const ice = new THREE.Mesh(this.barGeometry(i, 1, PADDLE_R * 1.9), iceMat);
+    ice.visible = false;
+    bar.add(ice);
     bar.rotation.y = side.t.x !== 0 ? 0 : Math.PI / 2;
     this.scene.add(bar);
 
@@ -712,8 +677,9 @@ export class View {
       char,
       lean,
       barrier: ph.barrier,
-      shield: ph.shield,
-      shieldMat: ph.shieldMat,
+      ice,
+      iceMat,
+      skin,
       stripMat: ph.stripMat,
       bayMat: ph.bayMat,
       light: ph.light,
@@ -721,24 +687,23 @@ export class View {
       squash: 0,
       fall: 0,
       flash: 0,
-      shieldFlash: 0,
       swing: 0,
       swingFx: false,
     };
   }
 
 /** A curved tube (parabola, like the collision shape) along the bar's local X axis. */
-  private barGeometry(seat: number, h: number): THREE.BufferGeometry {
+  private barGeometry(seat: number, h: number, radius = PADDLE_R): THREE.BufferGeometry {
     const side = SIDES[seat];
     const rot = side.t.x !== 0 ? 0 : Math.PI / 2;
     // Which local Z direction points into the arena for this seat.
     const sign = side.n.x * Math.sin(rot) + side.n.y * Math.cos(rot) > 0 ? 1 : -1;
     const hq = Math.round(h * 20) / 20;
-    const key = `${sign}:${hq}`;
+    const key = `${sign}:${hq}:${radius}`;
     let geo = this.barGeos.get(key);
     if (!geo) {
       const curve = new THREE.QuadraticBezierCurve3(new THREE.Vector3(-hq, 0, 0), new THREE.Vector3(0, 0, sign * 2 * PADDLE_CURVE), new THREE.Vector3(hq, 0, 0));
-      geo = new THREE.TubeGeometry(curve, 24, PADDLE_R, 14, false);
+      geo = new THREE.TubeGeometry(curve, 24, radius, 14, false);
       this.barGeos.set(key, geo);
     }
     return geo;
@@ -871,6 +836,54 @@ export class View {
     return this.project(side.w.x - side.n.x * 1.2, 1.6, side.w.y - side.n.y * 1.2);
   }
 
+  /**
+   * Builds everything that can appear mid-match once, up front: three.js compiles a shader the first time
+   * an object is drawn, which is a visible hitch if it happens during a goal or an elimination.
+   */
+  private warmUp(): void {
+    const hidden: THREE.Object3D[] = [];
+    const show = (o: THREE.Object3D) => {
+      if (!o.visible) {
+        hidden.push(o);
+        o.visible = true;
+      }
+    };
+    for (const s of this.seats) {
+      show(s.barrier.group);
+      show(s.ice);
+    }
+    for (const b of this.badges) show(b.sprite);
+    show(this.serveRing);
+    const kinds = Object.keys(CRATE_INFO) as CrateKind[];
+    for (const k of kinds) {
+      this.renderer.initTexture(this.badgeTexture(k));
+      if (!this.crateTex.has(k)) this.crateTex.set(k, itemTexture(k));
+      this.renderer.initTexture(this.crateTex.get(k)!);
+      itemIconURL(k);
+    }
+    // A ball and a crate in the scene, so their material variants compile too.
+    const ballMat = new THREE.MeshStandardMaterial({ map: this.ballTex, color: 0xe6eaf5, roughness: 0.45, metalness: 0.35, emissive: 0xffffff, emissiveIntensity: 0.12 });
+    const ball = new THREE.Mesh(this.ballGeo, ballMat);
+    ball.castShadow = true;
+    const crateMat = new THREE.MeshStandardMaterial({ map: this.crateTex.get('shield'), roughness: 0.55, emissive: 0xffffff, emissiveIntensity: 0.25 });
+    const crate = new THREE.Mesh(new RoundedBoxGeometry(1.1, 1.1, 1.1, 2, 0.08), crateMat);
+    crate.castShadow = true;
+    this.scene.add(ball, crate);
+    // The game draws into the composer's buffer (linear colour space), not the screen: compiling for the
+    // screen would build shaders that are never used. Compile into the same kind of target.
+    this.renderer.setRenderTarget(this.composer.renderTarget1);
+    try {
+      this.renderer.compile(this.scene, this.camera);
+    } finally {
+      this.renderer.setRenderTarget(null);
+      this.scene.remove(ball, crate);
+      ballMat.dispose();
+      crateMat.dispose();
+      crate.geometry.dispose();
+      for (const o of hidden) o.visible = false;
+    }
+  }
+
   /** Rotates the camera so this seat's goal is at the bottom of the screen. */
   setViewSeat(seat: number): void {
     this.viewSeat = seat;
@@ -886,7 +899,6 @@ export class View {
       s.squash = 0;
       s.fall = 0;
       s.flash = 0;
-      s.shieldFlash = 0;
       s.swing = 0;
       s.barrier.on = 0;
       s.barrier.flash = 0;
@@ -912,6 +924,9 @@ export class View {
     this.fliers = [];
     this.confetti = 0;
     this.trauma = 0;
+    this.winSeat = -1;
+    this.win = 0;
+    this.applyWinLights();
   }
 
   resize(): void {
@@ -944,9 +959,11 @@ export class View {
     this.trauma = Math.min(1, this.trauma + amount);
   }
 
+  /** Match over: the camera and lights focus on the winner's side and confetti falls around them. */
   celebrate(seat: number): void {
-    this.confetti = 6;
-    this.confettiSeat = seat;
+    this.confetti = 8;
+    this.confettiSeat = Math.max(0, seat);
+    this.winSeat = seat;
   }
 
   // --- events -------------------------------------------------------------------------
@@ -977,14 +994,14 @@ export class View {
         break;
       }
       case 'wall':
-        if (ev.closed && this.seats[ev.seat].barrier.on > 0.5) {
-          // Ball against the force field: a bright zap.
-          this.seats[ev.seat].barrier.flash = 1;
-          this.particles.burst(ev.x, ev.y, new THREE.Color(0x9fe2ff), 22, 7, 0.32, 0.35, 2);
-          this.particles.burst(ev.x, ev.y, new THREE.Color(0xffffff), 8, 9, 0.22, 0.2, 2);
-        } else if (ev.closed) {
-          this.seats[ev.seat].shieldFlash = 1;
-          this.particles.burst(ev.x, ev.y, this.seatColor(ev.seat), 8, 5, 0.3, 0.4, 2);
+        if (ev.closed) {
+          const bar = this.seats[ev.seat].barrier;
+          if (bar.on > 0.5) {
+            // A ball hits the force field: a soft pulse and a few sparks (kept gentle on purpose).
+            bar.flash = 0.55;
+            const col = bar.electric ? new THREE.Color(0x9fe2ff) : this.seatColor(ev.seat);
+            this.particles.burst(ev.x, ev.y, dim(col, 0.4), 7, 4, 0.2, 0.28, 1);
+          }
         } else if (ev.speed > 3) {
           this.particles.burst(ev.x, ev.y, new THREE.Color(0x9bb8ff), 4, 3, 0.22, 0.3, 1);
         }
@@ -1002,11 +1019,11 @@ export class View {
         break;
       }
       case 'eliminated': {
+        // Kept light on purpose: a big burst here caused a visible hitch.
         const side = SIDES[ev.seat];
-        const c = this.seatColor(ev.seat);
-        this.particles.burst(side.w.x + side.n.x * 0.6, side.w.y + side.n.y * 0.6, c, 140, 12, 0.6, 1.4, 7);
-        this.addRing(side.w.x, side.w.y, SEATS[ev.seat].color, 10, 1.0);
-        this.shake(0.8);
+        this.particles.burst(side.w.x + side.n.x * 0.6, side.w.y + side.n.y * 0.6, dim(this.seatColor(ev.seat), 0.55), 36, 9, 0.45, 1.0, 5);
+        this.addRing(side.w.x, side.w.y, SEATS[ev.seat].color, 7, 0.8, 0.5);
+        this.shake(0.35);
         break;
       }
       case 'crateSpawn': {
@@ -1037,10 +1054,14 @@ export class View {
         this.addRing(side.w.x + side.n.x * PADDLE_INSET, side.w.y + side.n.y * PADDLE_INSET, col, 4, 0.5);
         this.particles.burst(side.w.x + side.n.x * 1.5, side.w.y + side.n.y * 1.5, new THREE.Color(col), 30, 6, 0.4, 0.7, 4);
         if (ev.kind === 'freeze') {
+          // A freeze wave reaches every other paddle: a ring and a puff of frost on each.
           for (let s = 0; s < 4; s++) {
             if (s === ev.seat) continue;
             const o = SIDES[s];
-            this.particles.burst(o.w.x + o.n.x * PADDLE_INSET, o.w.y + o.n.y * PADDLE_INSET, new THREE.Color(0x9bf6ff), 30, 5, 0.45, 0.9, 3);
+            const x = o.w.x + o.n.x * PADDLE_INSET;
+            const z = o.w.y + o.n.y * PADDLE_INSET;
+            this.addRing(x, z, 0x9bf6ff, 6, 0.7, 0.55);
+            this.particles.burst(x, z, new THREE.Color(0x9bf6ff).multiplyScalar(0.5), 16, 4, 0.35, 0.8, 2);
           }
         }
         break;
@@ -1079,7 +1100,7 @@ export class View {
 
   private ballTint(b: Ball): THREE.Color {
     if (b.extra) return tmpColor.set(0xff6b9d);
-    if (b.last >= 0) return tmpColor.set(SEATS[b.last].color);
+    if (b.owner >= 0) return tmpColor.set(SEATS[b.owner].color);
     return tmpColor.set(0xffffff);
   }
 
@@ -1107,6 +1128,7 @@ export class View {
     this.updateRings(dt);
     this.updateGhosts(dt);
     this.updateFliers(sim, dt);
+    this.updateWin(dt);
     this.updateCamera(dt);
     this.adaptQuality();
 
@@ -1117,10 +1139,13 @@ export class View {
 
     if (this.confetti > 0) {
       this.confetti -= dt;
-      const palette = [SEATS[this.confettiSeat].color, 0xffd23f, 0xffffff, 0x4cc9f0];
-      for (let i = 0; i < 6; i++) {
-        tmpColor.set(palette[Math.floor(Math.random() * palette.length)]);
-        this.particles.emit((Math.random() - 0.5) * 22, 11 + Math.random() * 3, (Math.random() - 0.5) * 22, (Math.random() - 0.5) * 2, -3 - Math.random() * 3, (Math.random() - 0.5) * 2, tmpColor, 0.45, 2.6, 0.8, 0.2);
+      const palette = [SEATS[this.confettiSeat].color, 0xffd23f, 0xffffff];
+      // Confetti falls around the winner, not over the whole arena.
+      const cx = this.winSeat >= 0 ? this.winPos.x : 0;
+      const cz = this.winSeat >= 0 ? this.winPos.z : 0;
+      for (let i = 0; i < 4; i++) {
+        tmpColor.set(palette[Math.floor(Math.random() * palette.length)]).multiplyScalar(0.7);
+        this.particles.emit(cx + (Math.random() - 0.5) * 12, 10 + Math.random() * 3, cz + (Math.random() - 0.5) * 12, (Math.random() - 0.5) * 2, -3 - Math.random() * 3, (Math.random() - 0.5) * 2, tmpColor, 0.45, 2.6, 0.8, 0.2);
       }
     }
     this.particles.update(dt);
@@ -1134,7 +1159,6 @@ export class View {
       const side = SIDES[p.seat];
       o.squash = Math.max(0, o.squash - dt * 4);
       o.flash = Math.max(0, o.flash - dt * 3);
-      o.shieldFlash = Math.max(0, o.shieldFlash - dt * 3);
       o.swing = Math.max(0, o.swing - dt * 5);
 
       // paddle bar
@@ -1197,43 +1221,100 @@ export class View {
       o.lean.rotation.x = -o.fall * 1.5 + Math.sin(o.swing * Math.PI) * 0.4;
       o.lean.position.z = Math.sin(o.swing * Math.PI) * 0.5;
       o.char.visible = o.fall < 0.98;
+      if (p.alive && p.fx.chill > 0) {
+        // Shivering: a fast, tiny sideways tremble.
+        const tr = Math.sin(this.time * 60) * 0.035;
+        o.char.position.x += side.t.x * tr;
+        o.char.position.z += side.t.y * tr;
+      }
+      const winner = this.winSeat === p.seat;
+      if (winner) {
+        // The winner hops and sways.
+        o.char.position.y += Math.abs(Math.sin(this.time * 4.5)) * 0.55 * this.win;
+        o.lean.rotation.z += Math.sin(this.time * 3) * 0.12 * this.win;
+        this.winPos.copy(o.char.position);
+      }
+      o.char.scale.setScalar(CHAR_SCALE * (winner ? 1 + 0.25 * this.win : 1));
 
-      // goal glow, bay, seal and shield
+      // goal glow, bay and force field
       o.stripMat.emissiveIntensity = (p.alive ? 0.75 : 0.2) + o.flash * 0.3;
       o.bayMat.emissiveIntensity = (p.alive ? 0.18 : 0.04) + o.flash * 0.15;
-      o.light.intensity = (p.alive ? 22 : 5) + o.flash * 5;
-      this.updateBarrier(o, p.alive, dt);
+      this.updateBarrier(o, p, dt);
       this.syncLifeTag(p.seat, p.lives, p.alive, dt);
       this.syncBadge(p.seat, p, dt);
       if (!p.alive) {
-        // The goal light turns electric and flickers with the field.
+        // The goal light turns cold electric blue (steady: a flickering light is tiring to look at).
         o.light.color.set(0x66ccff);
-        o.light.intensity = 10 + o.barrier.flash * 60 + Math.random() * 6 * o.barrier.on;
+        o.light.intensity = 7 + o.barrier.flash * 6;
       } else {
         o.light.color.set(SEATS[p.seat].color);
+        o.light.intensity = 16 + o.flash * 3;
       }
-
-      const sh = p.alive && p.fx.shield > 0;
-      o.shield.visible = sh && (p.fx.shield > 1.6 || Math.floor(this.time * 10) % 2 === 0);
-      o.shieldMat.opacity = 0.35 + 0.1 * Math.sin(this.time * 6) + o.shieldFlash * 0.6;
+      this.syncIce(o, p, dt);
     }
   }
 
-  private updateBarrier(o: SeatObj, alive: boolean, dt: number): void {
+  /** Frozen paddles get an ice shell, drifting frost, a shivering character and an icy tint. */
+  private syncIce(o: SeatObj, p: PlayerState, dt: number): void {
+    const chill = p.alive ? p.fx.chill : 0;
+    const frozen = chill > 0;
+    o.ice.visible = frozen;
+    o.skin.emissive.set(frozen ? 0x35c8ff : 0x000000);
+    o.skin.emissiveIntensity = frozen ? 0.3 : 0;
+    if (!frozen) return;
+    const geo = this.barGeometry(p.seat, p.h, PADDLE_R * 1.9);
+    if (o.ice.geometry !== geo) o.ice.geometry = geo;
+    // The shell is steady, then flickers while it is about to melt.
+    o.iceMat.opacity = chill > 0.8 ? 0.42 : 0.15 + 0.3 * (0.5 + 0.5 * Math.sin(this.time * 30));
+    if (Math.random() < dt * 22) {
+      // Frost mist drifting off the paddle.
+      const side = SIDES[p.seat];
+      const along = (Math.random() * 2 - 1) * p.h;
+      tmpColor.set(0xd2f8ff).multiplyScalar(0.55);
+      this.particles.emit(o.bar.position.x + side.t.x * along, 0.55, o.bar.position.z + side.t.y * along, (Math.random() - 0.5) * 0.5, 0.5 + Math.random() * 0.5, (Math.random() - 0.5) * 0.5, tmpColor, 0.4, 0.9, -0.2, 1);
+    }
+    if (chill < 0.12) {
+      // It melts: a little shower of ice.
+      const side = SIDES[p.seat];
+      this.particles.burst(o.bar.position.x, o.bar.position.z, tmpColor.set(0xbff3ff).multiplyScalar(0.5), 6, 3, 0.3, 0.5, 2);
+      void side;
+    }
+  }
+
+  private updateBarrier(o: SeatObj, p: PlayerState, dt: number): void {
     const b = o.barrier;
-    const target = alive ? 0 : Math.min(1, o.fall * 1.6);
-    b.on += (target - b.on) * Math.min(1, dt * 4);
-    b.flash = Math.max(0, b.flash - dt * 4);
+    const out = !p.alive;
+    const shield = p.alive && p.fx.shield > 0;
+    const left = p.fx.shield;
+    let target = 0;
+    if (out) target = Math.min(1, o.fall * 1.6);
+    else if (shield) target = left > 1.5 ? 1 : 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(this.time * 24)); // flickers when about to run out
+    b.on += (target - b.on) * Math.min(1, dt * (shield ? 12 : 4));
+    b.flash = Math.max(0, b.flash - dt * 5);
+    b.electric = out;
     b.group.visible = b.on > 0.01;
     if (!b.group.visible) return;
-    b.mat.uniforms.uTime.value = this.time;
-    b.mat.uniforms.uOn.value = b.on;
-    b.mat.uniforms.uFlash.value = b.flash;
+
+    const u = b.mat.uniforms;
+    u.uTime.value = this.time;
+    u.uOn.value = b.on;
+    u.uFlash.value = b.flash;
+    u.uCalm.value = shield ? 1 : 0;
+    (u.uColor.value as THREE.Color).set(out ? 0x3fa9ff : SEATS[p.seat].color);
+    b.strip.color.set(out ? 0x9fe2ff : SEATS[p.seat].color);
+    if (shield) b.strip.color.lerp(WHITE, 0.55);
+    // The floor strip burns down with the shield's remaining time, so everyone can read how long it lasts.
+    b.stripMesh.scale.x = shield ? Math.max(0.04, left / FX_SHIELD) : 1;
+    b.strip.opacity = (shield ? 1 : 0.75 + 0.1 * Math.sin(this.time * 30)) * b.on + b.flash * 0.1;
+
     b.nextBolt -= dt;
     if (b.nextBolt <= 0) {
-      // Re-draw the lightning bolts between the goal posts a few times a second.
-      b.nextBolt = 0.05 + Math.random() * 0.08;
-      for (const line of b.bolts) {
+      // Re-draw the lightning between the goal posts a few times a second (only for the eliminated look;
+      // a shield just gets one faint bolt).
+      b.nextBolt = 0.06 + Math.random() * 0.09;
+      b.bolts.forEach((line, idx) => {
+        line.visible = out || (shield && idx === 0);
+        if (!line.visible) return;
         const pos = line.geometry.getAttribute('position') as THREE.BufferAttribute;
         const y0 = 0.2 + Math.random() * 1.0;
         const y1 = 0.2 + Math.random() * 1.0;
@@ -1243,20 +1324,18 @@ export class View {
           pos.setXYZ(i, -GOAL_HALF + k * 2 * GOAL_HALF, y0 + (y1 - y0) * k + (Math.random() - 0.5) * 0.5 * edge, (Math.random() - 0.5) * 0.12 * edge);
         }
         pos.needsUpdate = true;
-        (line.material as THREE.LineBasicMaterial).opacity = (Math.random() < 0.7 ? 0.9 : 0.2) * b.on + b.flash * 0.5;
-      }
+        (line.material as THREE.LineBasicMaterial).opacity = (Math.random() < 0.7 ? 0.7 : 0.2) * b.on * (shield ? 0.45 : 1) + b.flash * 0.1;
+      });
     }
-    b.strip.opacity = (0.55 + 0.25 * Math.sin(this.time * 30)) * b.on + b.flash * 0.4;
-    // Sparks ride along the bolts; particles glow from every angle, unlike 1-pixel lines.
-    const sparks = Math.round((3 + b.flash * 20) * b.on);
-    for (let i = 0; i < sparks; i++) {
+    // A few sparks along the eliminated field; particles glow from every angle, unlike 1-pixel lines.
+    if (out && Math.random() < 0.5 * b.on) {
       const line = b.bolts[Math.floor(Math.random() * b.bolts.length)];
       const pos = line.geometry.getAttribute('position') as THREE.BufferAttribute;
       const k = Math.floor(Math.random() * BOLT_POINTS);
       SPARK_POS.set(pos.getX(k), pos.getY(k), pos.getZ(k));
       b.group.localToWorld(SPARK_POS);
       tmpColor.set(Math.random() < 0.5 ? 0xbfeaff : 0x5fb8ff);
-      this.particles.emit(SPARK_POS.x, SPARK_POS.y, SPARK_POS.z, (Math.random() - 0.5) * 1.5, (Math.random() - 0.3) * 1.5, (Math.random() - 0.5) * 1.5, tmpColor, 0.32, 0.18, 0, 1);
+      this.particles.emit(SPARK_POS.x, SPARK_POS.y, SPARK_POS.z, (Math.random() - 0.5) * 1.2, (Math.random() - 0.3) * 1.2, (Math.random() - 0.5) * 1.2, tmpColor, 0.28, 0.16, 0, 1);
     }
   }
 
@@ -1294,7 +1373,7 @@ export class View {
       const tint = TINT.copy(this.ballTint(b));
       const fire = Math.min(1, b.boost / SMASH_BOOST);
       // A soft tint of the owner's colour; only a smashed ball glows (it is dangerous, so it should read).
-      o.mat.emissive.copy(tint).lerp(WHITE, b.last < 0 && !b.extra ? 1 : 0.35).lerp(FIRE, fire);
+      o.mat.emissive.copy(tint).lerp(WHITE, b.owner < 0 && !b.extra ? 1 : 0.35).lerp(FIRE, fire);
       o.mat.emissiveIntensity = 0.12 + fire * 0.45;
 
       // No permanent tail. Only a smashed ball leaves a short one, so the threat is readable.
@@ -1439,6 +1518,26 @@ export class View {
     }
   }
 
+  private applyWinLights(): void {
+    const k = 1 - 0.68 * this.win;
+    this.hemi.intensity = HEMI_BASE * k;
+    this.sun.intensity = SUN_BASE * k;
+    this.spot.intensity = 380 * this.win;
+  }
+
+  /** Eases the winner focus in and keeps the spotlight on the winner. */
+  private updateWin(dt: number): void {
+    const target = this.winSeat >= 0 ? 1 : 0;
+    this.win += (target - this.win) * Math.min(1, dt * 2.2);
+    if (target === 0 && this.win < 0.002) this.win = 0;
+    this.applyWinLights();
+    if (this.winSeat < 0) return;
+    const side = SIDES[this.winSeat];
+    this.spot.color.set(SEATS[this.winSeat].color).lerp(WHITE, 0.55);
+    this.spot.position.set(this.winPos.x + side.n.x * 3.5, 10, this.winPos.z + side.n.y * 3.5);
+    this.spot.target.position.set(this.winPos.x, 1.0, this.winPos.z);
+  }
+
   private updateCamera(dt: number): void {
     this.cine += (this.cineTarget - this.cine) * Math.min(1, dt * 2.5);
     const cine = this.cine;
@@ -1460,8 +1559,26 @@ export class View {
     this.camera.position.z += oz;
     this.camera.lookAt(ox, 0, oz);
 
-    if (this.width / this.height > 1.2 && cine > 0.002) {
-      this.camera.setViewOffset(this.width, this.height, -this.width * 0.16 * cine, 0, this.width, this.height);
+    if (this.win > 0.001 && this.winSeat >= 0) {
+      // Close-up of the winner: the camera stands in the field in front of their goal and drifts slowly around.
+      const side = SIDES[this.winSeat];
+      const e = this.win * this.win * (3 - 2 * this.win);
+      const ang = Math.atan2(side.n.x, side.n.y) + Math.sin(this.time * 0.5) * 0.16;
+      const el = 0.36;
+      const dist = 14;
+      const px = this.winPos.x + Math.sin(ang) * Math.cos(el) * dist;
+      const py = Math.sin(el) * dist + 1.0;
+      const pz = this.winPos.z + Math.cos(ang) * Math.cos(el) * dist;
+      this.camera.position.x += (px - this.camera.position.x) * e;
+      this.camera.position.y += (py - this.camera.position.y) * e;
+      this.camera.position.z += (pz - this.camera.position.z) * e;
+      this.camera.lookAt(ox + (this.winPos.x - ox) * e, 1.2 * e, oz + (this.winPos.z - oz) * e);
+    }
+
+    // The scene sits to the right of the menu / results panel on wide screens, so the winner stays clear.
+    const shift = Math.max(0.16 * cine, 0.17 * this.win);
+    if (this.width / this.height > 1.2 && shift > 0.002) {
+      this.camera.setViewOffset(this.width, this.height, -this.width * shift, 0, this.width, this.height);
     } else {
       this.camera.clearViewOffset();
     }

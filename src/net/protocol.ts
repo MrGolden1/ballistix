@@ -36,7 +36,7 @@ export interface Snapshot {
   paused: boolean;
   /** per player: s, vs, h, lives, alive, big, shield, chill, split, item, smashT, smashCd, axis, saves, conceded, scored, crates, smashes */
   P: number[][];
-  /** per ball: id, x, y, vx, vy, speed, boost, last, hold, extra */
+  /** per ball: id, x, y, vx, vy, speed, boost, owner, hold, extra */
   B: number[][];
   /** per crate: id, x, y, kind, age, ttl */
   C: number[][];
@@ -59,7 +59,7 @@ export function encodeSnapshot(sim: Sim, paused: boolean): Snapshot {
       p.item ? ITEMS.indexOf(p.item) : -1, r3(p.smashT), r3(p.smashCd), r3(p.axis),
       p.stats.saves, p.stats.conceded, p.stats.scored, p.stats.crates, p.stats.smashes,
     ]),
-    B: sim.balls.map((b) => [b.id, r3(b.x), r3(b.y), r3(b.vx), r3(b.vy), r3(b.speed), r3(b.boost), b.last, r3(b.hold), b.extra ? 1 : 0]),
+    B: sim.balls.map((b) => [b.id, r3(b.x), r3(b.y), r3(b.vx), r3(b.vy), r3(b.speed), r3(b.boost), b.owner, r3(b.hold), b.extra ? 1 : 0]),
     C: sim.crates.map((c) => [c.id, r3(c.x), r3(c.y), CRATES.indexOf(c.kind), r3(c.age), c.ttl]),
   };
 }
@@ -96,7 +96,7 @@ export function applySnapshot(sim: Sim, snap: Snapshot, localSeat: number, lead 
     p.stats = { saves: v[13], conceded: v[14], scored: v[15], crates: v[16], smashes: v[17] };
   });
   sim.balls = snap.B.map(
-    (v): Ball => ({ id: v[0], x: v[1], y: v[2], vx: v[3], vy: v[4], speed: v[5], boost: v[6], last: v[7], hold: v[8], extra: v[9] === 1, ttl: Infinity, sinceHit: 0, hits: 0, dead: false }),
+    (v): Ball => ({ id: v[0], x: v[1], y: v[2], vx: v[3], vy: v[4], speed: v[5], boost: v[6], last: v[7], owner: v[7], ownerT: 0, hold: v[8], extra: v[9] === 1, ttl: Infinity, sinceHit: 0, hits: 0, dead: false }),
   );
   // Lag compensation: the snapshot is already half a round trip old when it arrives, so move the balls
   // on by that much. The guest then sees roughly where the balls are on the host right now.
