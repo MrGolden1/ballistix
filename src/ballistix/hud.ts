@@ -1,4 +1,5 @@
-import { CRATE_INFO, SEATS, SMASH_CD } from './config';
+import { CRATE_INFO, SEATS, SMASH_CD, seatName } from './config';
+import { escapeHtml, initial } from '../core/names';
 import { itemIconURL } from './icons';
 import { kbd } from './labels';
 import type { PlayerState, Sim } from './sim';
@@ -87,7 +88,10 @@ export class Hud {
     this.countEl.textContent = '';
 
     // Local players first, then the others in screen order (clockwise from the bottom).
-    const order = [0, 1, 2, 3].map((k) => (viewSeat + k) % 4).sort((a, b) => Number(localSeats.includes(b)) - Number(localSeats.includes(a)));
+    const order = [0, 1, 2, 3]
+      .map((k) => (viewSeat + k) % 4)
+      .filter((seat) => sim.players[seat].active)
+      .sort((a, b) => Number(localSeats.includes(b)) - Number(localSeats.includes(a)));
     const humans = sim.players.filter((p) => p.human).map((p) => p.seat);
     const tag = (seat: number) => (localSeats.length === 1 && localSeats[0] === seat ? 'YOU' : humans.includes(seat) ? `P${humans.indexOf(seat) + 1}` : '');
 
@@ -97,7 +101,8 @@ export class Hud {
       el.className = `row${localSeats.includes(seat) ? ' local' : ''}`;
       el.style.setProperty('--c', SEATS[seat].css);
       const t = tag(seat);
-      el.innerHTML = `<span class="av">${SEATS[seat].name[0]}</span><span class="nm">${SEATS[seat].name}${t ? `<em>${t}</em>` : ''}</span><span class="lv"><b>0</b><i><s></s></i></span><span class="tags"></span>`;
+      const name = seatName(sim.cfg, seat);
+      el.innerHTML = `<span class="av">${escapeHtml(initial(name))}</span><span class="nm">${escapeHtml(name)}${t ? `<em>${t}</em>` : ''}</span><span class="lv"><b>0</b><i><s></s></i></span><span class="tags"></span>`;
       this.board.appendChild(el);
       return { seat, el, num: el.querySelector('.lv b') as HTMLElement, bar: el.querySelector('.lv s') as HTMLElement, tags: el.querySelector('.tags') as HTMLElement, lives: -1, tagKey: '-' };
     });
@@ -109,7 +114,8 @@ export class Hud {
       el.style.setProperty('--c', SEATS[seat].css);
       const t = tag(seat);
       const k = keys(seat);
-      el.innerHTML = `<div class="mh"><span class="av">${SEATS[seat].name[0]}</span><b>${SEATS[seat].name}</b>${t ? `<em>${t}</em>` : ''}<span class="ml">♥ <b>0</b></span></div>
+      const name = seatName(sim.cfg, seat);
+      el.innerHTML = `<div class="mh"><span class="av">${escapeHtml(initial(name))}</span><b>${escapeHtml(name)}</b>${t ? `<em>${t}</em>` : ''}<span class="ml">♥ <b>0</b></span></div>
         <div class="ms"><span class="mk">${kbd(k.smash)}</span><span class="mlabel">SMASH</span><i><s></s></i><span class="mstate"></span></div>
         <div class="mi"></div>`;
       this.me.appendChild(el);

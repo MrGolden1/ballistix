@@ -85,6 +85,25 @@ function paddle(g: CanvasRenderingContext2D, x: number, half: number, color = MI
   g.restore();
 }
 
+/** Soft flames licking up from the paddle while a split shot is armed (the game does the same in 3D). */
+function flames(g: CanvasRenderingContext2D, x: number, half: number, t: number): void {
+  const y = GY - 15;
+  g.save();
+  g.globalCompositeOperation = 'lighter';
+  const tones = ['#ffc247', '#ff8a2a', '#ff8a2a', '#ff4a2a'];
+  for (let k = 0; k < 9; k++) {
+    const ph = (t * 1.8 + k * 0.37) % 1;
+    const fx = x + (k / 8 - 0.5) * 2 * half + Math.sin(t * 9 + k * 2.1) * 2.5;
+    const fy = y - 6 - ph * 16;
+    g.globalAlpha = (1 - ph) * 0.8;
+    g.fillStyle = tones[k % tones.length];
+    g.beginPath();
+    g.arc(fx, fy, (1 - ph) * 4.2 + 1, 0, 7);
+    g.fill();
+  }
+  g.restore();
+}
+
 function ball(g: CanvasRenderingContext2D, x: number, y: number, color = BALL, r = 5, alpha = 1): void {
   g.save();
   g.globalAlpha = alpha;
@@ -275,14 +294,8 @@ const demoFreeze: Demo = (g, t) => {
 const demoSplit: Demo = (g, t) => {
   scene(g);
   const armed = t > 0.3 && t < 1.2;
-  paddle(g, 110, 20, MINE, 0, armed ? 0.8 + Math.sin(t * 14) * 0.2 : 0);
-  if (armed) {
-    g.save();
-    g.shadowColor = CRATE_INFO.split.css;
-    g.shadowBlur = 10;
-    ring(g, 110, GY - 18, 28, CRATE_INFO.split.css, 0.7);
-    g.restore();
-  }
+  paddle(g, 110, 20, MINE, 0, armed ? 0.3 : 0);
+  if (armed) flames(g, 110, 20, t);
   if (t < 1.2) {
     ball(g, 110, lerp(2, GY - 26, seg(t, 0, 1.2)), BALL);
   } else if (t < 3.4) {
@@ -327,7 +340,7 @@ const CARDS: Card[] = [
   { id: 'shield', title: CRATE_INFO.shield.label, icon: 'shield', color: CRATE_INFO.shield.css, demo: demoShield, text: 'Seals your goal with an energy field in your colour for 6 seconds. The strip along the goal shows the time left, and the field flickers just before it ends. Keep it for a ball you cannot reach.' },
   { id: 'big', title: CRATE_INFO.big.label, icon: 'big', color: CRATE_INFO.big.css, demo: demoBig, text: 'A longer paddle for 10 seconds, so it covers more of your goal.' },
   { id: 'freeze', title: CRATE_INFO.freeze.label, icon: 'freeze', color: CRATE_INFO.freeze.css, demo: demoFreeze, text: 'Everyone else moves slowly for 4 seconds. You do not.' },
-  { id: 'split', title: CRATE_INFO.split.label, icon: 'split', color: CRATE_INFO.split.css, demo: demoSplit, text: 'Your next hit splits into 3 balls. The two extra balls vanish after 10 seconds.' },
+  { id: 'split', title: CRATE_INFO.split.label, icon: 'split', color: CRATE_INFO.split.css, demo: demoSplit, text: 'Your paddle smoulders until your next hit, which splits into 3 balls. The two extra balls vanish after 10 seconds.' },
   { id: 'life', title: CRATE_INFO.life.label, icon: 'life', color: CRATE_INFO.life.css, demo: demoLife, text: '+1 life, instantly. If you are already at full lives you get a short shield instead.' },
 ];
 

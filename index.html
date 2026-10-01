@@ -30,10 +30,18 @@
     <p class="tag">Four goals. One arena. Last one standing wins.</p>
 
     <div class="group" data-nav="seg">
-      <label>Players</label>
+      <label>Human players</label>
       <div class="seg" data-key="humans">
         <button data-value="1" type="button">1 Player</button>
         <button data-value="2" type="button">2 Players</button>
+      </div>
+    </div>
+    <div class="group" data-nav="seg">
+      <label>Players in the match <span class="sub">humans + bots</span></label>
+      <div class="seg" data-key="players">
+        <button data-value="2" type="button">2</button>
+        <button data-value="3" type="button">3</button>
+        <button data-value="4" type="button">4</button>
       </div>
     </div>
     <div class="group" data-nav="seg">
@@ -74,6 +82,16 @@
       <button class="mini" type="button" data-toggle="sfx">🔊 Sound</button>
       <button class="mini" type="button" data-toggle="vibration">≋ Vibration</button>
     </div>
+    <div class="group gfx" data-nav="seg">
+      <label>Graphics</label>
+      <div class="seg" data-key="graphics">
+        <button data-value="auto" type="button">Auto</button>
+        <button data-value="high" type="button">High</button>
+        <button data-value="medium" type="button">Medium</button>
+        <button data-value="low" type="button">Low</button>
+      </div>
+      <p id="gfx-info" class="padnote"></p>
+    </div>
   </section>
 </main>
 
@@ -81,6 +99,10 @@
   <section class="panel online">
     <h2>Play online</h2>
     <p class="note">A direct browser-to-browser connection: no game server. You and your friends swap two codes once (WhatsApp, Telegram, e-mail...).</p>
+    <div class="namebox">
+      <label for="on-name">Your name</label>
+      <input id="on-name" type="text" maxlength="14" autocomplete="off" spellcheck="false" placeholder="Player">
+    </div>
     <div id="on-choose">
       <button id="on-host" class="cta" type="button" data-nav="btn" data-default>HOST A ROOM</button>
       <button id="on-join" class="ghost" type="button" data-nav="btn">JOIN A ROOM</button>
@@ -97,7 +119,7 @@
       </ol>
       <div id="on-peers" class="pads"></div>
       <p id="on-hoststatus" class="note"></p>
-      <p class="padnote">Uses the menu settings (bot skill, item crates, lives). Bots fill the empty seats. Repeat the two steps for up to 3 friends.</p>
+      <p class="padnote">Uses the menu settings (players in the match, bot skill, item crates, lives). Bots fill the seats up to that number. Repeat the two steps for up to 3 friends.</p>
       <button id="on-start" class="cta" type="button" disabled>START ONLINE MATCH</button>
       <button id="on-closeroom" class="ghost" type="button">Close room</button>
     </div>

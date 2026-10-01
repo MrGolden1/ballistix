@@ -56,6 +56,16 @@ h2 { margin: 0 0 18px; font-size: 34px; font-style: italic; font-weight: 900; le
 .kicker { margin: 0; color: var(--muted); text-transform: uppercase; letter-spacing: 0.22em; font-size: 12px; font-weight: 700; }
 
 .group { margin-bottom: 14px; }
+.group label .sub { text-transform: none; letter-spacing: 0; font-weight: 500; opacity: 0.7; margin-left: 6px; }
+.group.gfx { margin: 14px 0 0; }
+.group.gfx .seg button { padding: 7px 4px; font-size: 13px; }
+.group.gfx .padnote { margin-top: 6px; min-height: 1em; }
+.namebox { margin: 0 0 14px; }
+#on-peers { margin-bottom: 12px; }
+#on-hoststatus, #on-joinstatus { margin-top: 10px; }
+.namebox label { display: block; margin-bottom: 6px; font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+.namebox input { width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 9px; border: 1px solid var(--edge); background: rgba(0, 0, 0, 0.3); color: var(--ink); font: 700 15px/1.2 system-ui, sans-serif; }
+.namebox input:focus { outline: 2px solid #9bd0ff; outline-offset: 1px; }
 .group label { display: block; margin-bottom: 6px; font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
 .seg { display: flex; gap: 6px; padding: 4px; border-radius: 12px; background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.08); }
 .seg button { flex: 1; border: 0; padding: 10px 6px; border-radius: 9px; background: transparent; color: var(--muted); font-weight: 700; font-size: 14px; cursor: pointer; transition: background 0.15s, color 0.15s, transform 0.1s; }

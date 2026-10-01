@@ -9,7 +9,7 @@ import type { Ball, Crate, Sim, SimEvent } from '../ballistix/sim';
 
 export type HostMsg =
   | { k: 'welcome'; seat: number }
-  | { k: 'lobby'; seats: number[] }
+  | { k: 'lobby'; seats: number[]; names: string[] }
   | { k: 'start'; cfg: MatchConfig }
   | { k: 'ev'; list: SimEvent[] }
   | { k: 'snap'; s: Snapshot }
@@ -17,6 +17,7 @@ export type HostMsg =
   | { k: 'pong'; t: number };
 
 export type GuestMsg =
+  | { k: 'hello'; name: string }
   | { k: 'in'; axis: number; s: number; vs: number; smash: number; item: number; rtt: number }
   | { k: 'pause' }
   | { k: 'ping'; t: number };

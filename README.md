@@ -68,7 +68,7 @@ downloads folder: no install, no server. (Or put `dist/` on any free static host
 2. Friend: *Play online* → *Join a room* → paste the invite → *Create reply code*; send the reply back.
 3. Host: paste the reply → *Connect*. Repeat for more friends (one invite per friend), then *Start online match*.
 
-Bots fill the empty seats, and the host's menu settings (bot skill, crates, lives) are used. Every
+Bots fill the empty seats up to the menu's *Players in the match* (friends always get a seat), and the host's menu settings (bot skill, crates, lives) are used. **Everyone can type a name** on the *Play online* screen; it is shown on the scoreboard, in pop-ups and in the results. Names are cleaned on arrival (no markup, control or hidden characters, 14 characters at most) and are always shown as plain text. Every
 player sees their own goal at the bottom of the screen, with "right" meaning right on their screen.
 Pause is shared: anyone can pause and resume for everyone. If a friend leaves, a bot takes over their seat.
 
@@ -92,10 +92,18 @@ balls moving at their current velocity. Bandwidth is small: a snapshot is about 
 **Limits, honestly:**
 - To find each other across the internet the browsers ask a public **STUN** server (Google /
   Cloudflare) for their public address. That is a tiny lookup; no game data goes through it.
+  **The lobby tells you whether it worked:** after creating an invite or reply code it says either
+  "Your public address was found, so friends on other networks can connect" or "No public address was
+  found (this network may block the lookup), so only players on the same network can connect".
+  If you see the second message, internet play from that network will not work (see the next point).
+  Some managed or corporate networks and firewalls block this lookup (UDP to ports 19302 / 3478).
 - On the same Wi-Fi it always works. Across the internet it works on most home connections, but
   some networks (strict / symmetric NAT, many mobile hotspots, carrier-grade NAT) cannot be
   connected directly. Those would need a relay (TURN) server, which this game does not use. If
   "Connect" never finishes, try another network (e.g. one player on home Wi-Fi instead of mobile data).
+- If you want guaranteed connections, even through strict NATs, the missing piece is a relay (TURN) server,
+  for example `coturn` in Docker on a machine with a public address. The game is built so that adding one is a
+  small change (a list of ICE servers in `src/net/peer.ts`).
 - The guest's paddle is trusted by the host. Fine between friends, not cheat-proof.
 - Latency matters like in any online game; within the same country it plays well.
 
@@ -109,7 +117,7 @@ balls moving at their current velocity. Bandwidth is small: a snapshot is about 
 
 ## Game rules
 
-- 4 seats: bottom, right, top, left. Bots fill every seat that has no human.
+- 2 to 4 players (menu: *Players in the match*, humans plus bots). Four seats: bottom, right, top, left. Bots fill the seats nobody plays, opposite you first. In a 2 or 3 player match the unused sides are closed with a solid wall, and only the players in the match get a scoreboard card.
 - Everyone starts with 3, 5 or 10 lives. A ball that gets into your goal costs one life.
   At 0 lives you are out and an electric force field seals your goal (balls bounce off it with a zap). The last player standing wins.
 - **Paddles are curved and have momentum.** Where the ball hits the paddle decides where it goes (centre
@@ -170,7 +178,7 @@ can collect. Aim your own shots at the crate you want. You hold one item at a ti
 | Shield | an energy field in your colour seals your goal for 6 s (save it for a ball you cannot reach). A bright strip burns down with the time left, and the field flickers in the last 1.5 s |
 | Big Paddle | paddle 60% longer for 10 s |
 | Freeze | everyone else moves at less than half speed for 4 s: their paddles get an ice shell with drifting frost, their characters shiver, and a freeze wave runs across the field |
-| Split Shot | your next hit splits into 3 balls |
+| Split Shot | your next hit splits into 3 balls. While it is armed your paddle smoulders: soft flames lick up in front of it (dim on purpose, the paddle keeps its colour) |
 | Extra Life | instant +1 life (or a short shield if you are at full lives) |
 
 Extra Life crates are rare unless somebody has already lost a life.
@@ -192,8 +200,25 @@ On your last life your paddle is 20% longer and smash recharges 50% faster.
   and elimination; now 0.
 - Elimination effects are deliberately light (a modest particle burst, short slow motion, one sound
   instead of two stacked ones).
-- Adaptive resolution: if frames get slow (under ~40 fps) the render resolution steps down, and it
-  steps back up when there is headroom. A strong GPU stays at full resolution.
+- **Graphics ladder.** Measured on an integrated GPU (Intel UHD, 1080p) the scene itself costs about 1 ms
+  per frame; almost everything else was post-processing: 4x MSAA on a half-float target ~10 ms, full
+  resolution bloom ~7 ms, the 2048 shadow map ~2 ms. So the game has quality levels that trade exactly
+  those, in this order: **High** (MSAA 4x, full bloom, 2048 shadows) → **Medium** (FXAA, half-resolution
+  bloom, 1024 shadows; looks the same to the eye) → **Reduced** (smaller bloom) → **Minimal** (no bloom),
+  and only then does the resolution drop (down to 60%). On that Intel GPU: High 16 ms, Medium 8 ms,
+  Minimal 5.5 ms per frame; on an RTX 4070 laptop GPU every level is 5-6 ms.
+  *Graphics: Auto* (menu, bottom) picks the starting level from the GPU's name (integrated GPUs start on
+  Medium), steps down when frames stay slower than ~52 fps for 1.5 s, steps the resolution back up when
+  there is plenty of room, and remembers the result for next time. The menu shows which GPU the browser
+  is really using. You can also force High, Medium or Low.
+- **Fewer draw calls.** The arena's static pieces (walls, pillars, trims) and each character's parts are
+  merged by material at start-up: 256 draw calls and 102 shadow casters per frame became 120 and 42, with
+  identical triangles. That is what limits slower CPUs.
+- **Laptops with two GPUs.** Windows often runs the browser on the weak integrated GPU. If the game
+  feels slow, open *Settings → System → Display → Graphics*, add Edge or Chrome, and choose *High performance*.
+- Effect rings are recycled instead of creating a material each time.
+- Smash hit-stop: a smash freezes the game for 70 ms on purpose, to give it weight (`SMASH_HITSTOP` in
+  `config.ts`; set it to 0 to turn it off).
 
 ## Architecture
 
@@ -206,14 +231,17 @@ src/
     input.ts              keyboard, merged with the gamepad manager
     gamepad.ts            layouts, join-by-press, DS4Windows de-duplication, menu nav, rumble
     audio.ts              Web Audio synth: SFX + music loop
+    names.ts              player-name cleaning and HTML escaping (names arrive over the network)
   ballistix/
-    config.ts             arena geometry, tuning constants, shared types
+    config.ts             arena geometry, tuning constants, shared types, seats in play
     sim.ts                pure game rules (no DOM, no three.js)  <- unit tested
     bot.ts                bot AI (interception prediction, per-shot error, difficulty)
     view.ts               three.js scene, characters, effects, camera, bloom
     particles.ts          GPU point-sprite particles
     hud.ts, ui.ts         DOM overlays
 tests/sim.test.ts         drift, curved paddle, smash reach, straight paths, ball director, items, last stand, bot matches
+tests/players.test.ts     2/3 player matches (closed sides, bots, serves), seat filling, player-name cleaning
+tests/net.test.ts         invite/reply codes (round trip, chat-app mangling, wrong code messages), reach, snapshots
 tests/gamepad.test.ts     layouts, duplicate filtering, seats, actions, disconnects, menu repeat, rumble
 ```
 

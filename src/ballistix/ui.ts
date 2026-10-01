@@ -1,13 +1,20 @@
 import { glyphs, type Gamepads, type PadKind } from '../core/gamepad';
 import { Guide } from './guide';
 import { kbd, setKeycap } from './labels';
-import { CRATE_INFO, SEATS, type CrateKind, type Difficulty } from './config';
+import { CRATE_INFO, SEATS, seatName, type CrateKind, type Difficulty } from './config';
 import type { Sim } from './sim';
+import type { GraphicsMode } from './view';
+import { cleanName, escapeHtml } from '../core/names';
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 
 export interface Settings {
   humans: 1 | 2;
+  /** Players in the match, humans plus bots. */
+  players: 2 | 3 | 4;
+  graphics: GraphicsMode;
+  /** Your name in online matches. */
+  name: string;
   difficulty: Difficulty;
   lives: number;
   /** 1 = item crates on, 0 = off. */
@@ -19,16 +26,22 @@ export interface Settings {
 }
 
 export type ToggleKind = 'music' | 'sfx' | 'vibration';
-type SegKey = 'humans' | 'difficulty' | 'lives' | 'crates';
+type SegKey = 'humans' | 'players' | 'difficulty' | 'lives' | 'crates' | 'graphics';
 
-const DEFAULTS: Settings = { humans: 1, difficulty: 'normal', lives: 5, crates: 1, music: true, sfx: true, vibration: true };
+const DEFAULTS: Settings = { humans: 1, players: 4, graphics: 'auto', name: '', difficulty: 'normal', lives: 5, crates: 1, music: true, sfx: true, vibration: true };
 const STORE_KEY = 'ballistix.settings.v1';
 const TOGGLE_LABEL: Record<ToggleKind, string> = { music: '♪ Music', sfx: '🔊 Sound', vibration: '≋ Vibration' };
 
 function load(): Settings {
   try {
     const raw = localStorage.getItem(STORE_KEY);
-    if (raw) return { ...DEFAULTS, ...JSON.parse(raw) };
+    if (raw) {
+      const s: Settings = { ...DEFAULTS, ...JSON.parse(raw) };
+      if (![2, 3, 4].includes(s.players)) s.players = 4;
+      if (!['auto', 'high', 'medium', 'low'].includes(s.graphics)) s.graphics = 'auto';
+      s.name = cleanName(s.name);
+      return s;
+    }
   } catch {
     /* storage unavailable: use defaults */
   }
@@ -50,6 +63,8 @@ export class UI {
   onToggle: (kind: ToggleKind, on: boolean) => void = () => {};
   /** Called after a menu option changed (the controller panel depends on the player count). */
   onChange: () => void = () => {};
+  /** The Graphics setting changed. */
+  onGraphics: (mode: GraphicsMode) => void = () => {};
 
   private menu = $('menu');
   private pause = $('pause');
@@ -74,9 +89,10 @@ export class UI {
         if (!btn) return;
         const v = btn.dataset.value as string;
         const s = this.settings as unknown as Record<string, unknown>;
-        s[key] = key === 'difficulty' ? v : Number(v);
+        s[key] = key === 'difficulty' || key === 'graphics' ? v : Number(v);
         this.persist();
         this.refresh();
+        if (key === 'graphics') this.onGraphics(this.settings.graphics);
         this.onChange();
       });
     }
@@ -107,6 +123,18 @@ export class UI {
     this.persist();
     this.refresh();
     this.onToggle(kind, this.settings[kind]);
+  }
+
+  /** Stores the player's name for online matches. */
+  setName(name: string): void {
+    this.settings.name = cleanName(name);
+    this.persist();
+  }
+
+  /** The line under the Graphics buttons: which GPU is in use and at what level. */
+  setGraphicsInfo(text: string): void {
+    const el = $('gfx-info');
+    if (el.textContent !== text) el.textContent = text;
   }
 
   private persist(): void {
@@ -233,17 +261,18 @@ export class UI {
     const info = winner >= 0 ? SEATS[winner] : null;
     const youWon = winner >= 0 && sim.players[winner].human;
     const title = $('r-title');
-    title.textContent = !info ? 'Draw' : youWon ? `${info.name} wins!` : `${info.name} wins`;
+    const wname = winner >= 0 ? seatName(sim.cfg, winner) : '';
+    title.textContent = !info ? 'Draw' : youWon ? `${wname} wins!` : `${wname} wins`;
     title.style.color = info ? info.css : '#fff';
 
     const order = [winner, ...[...eliminationOrder].reverse()].filter((s, i, a) => s >= 0 && a.indexOf(s) === i);
-    for (const p of sim.players) if (!order.includes(p.seat)) order.push(p.seat);
+    for (const p of sim.players) if (p.active && !order.includes(p.seat)) order.push(p.seat);
     const humans = sim.players.filter((p) => p.human).map((p) => p.seat);
     void humans;
     const rows = order
       .map((seat, i) => {
         const p = sim.players[seat];
-        const who = `${SEATS[seat].name}${p.human ? (seat === this.youSeat ? ' (you)' : ' (player)') : ''}`;
+        const who = escapeHtml(`${seatName(sim.cfg, seat)}${p.human ? (seat === this.youSeat ? ' (you)' : ' (player)') : ''}`);
         return `<tr class="${i === 0 ? 'win' : ''}" style="--c:${SEATS[seat].css}"><td><span class="dot"></span>${i + 1}. ${who}</td><td>${p.stats.saves}</td><td>${p.stats.smashes}</td><td class="hl">${p.stats.scored}</td><td>${p.stats.conceded}</td><td>${p.stats.crates}</td></tr>`;
       })
       .join('');
@@ -286,6 +315,7 @@ export class UI {
     const f = this.focus.get(screen) ?? { row: 0, sub: 0 };
     this.rowsOf(screen).forEach((el, i) => {
       el.classList.toggle('focus', i === f.row);
+      if (i === f.row && this.navMode) el.scrollIntoView({ block: 'nearest' });
       if (el.dataset.nav === 'row') {
         el.querySelectorAll('button').forEach((b, j) => b.classList.toggle('focus', i === f.row && j === f.sub));
       }

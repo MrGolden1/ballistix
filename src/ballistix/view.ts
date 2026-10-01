@@ -3,7 +3,9 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { FXAAPass } from 'three/examples/jsm/postprocessing/FXAAPass.js';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
   BALL_R,
   GOAL_HALF,
@@ -173,6 +175,8 @@ interface SeatObj {
   swing: number;
   /** Draw the swing-reach arc on the next frame. */
   swingFx: boolean;
+  /** Fractional flame particles owed (split shot). */
+  flame: number;
 }
 
 interface BallObj {
@@ -339,12 +343,100 @@ function makeBarrier(seat: number): Barrier {
   group.visible = false;
   return { group, mat, bolts, strip, stripMesh, on: 0, flash: 0, electric: false, nextBolt: 0 };
 }
+/**
+ * Bakes the pieces' transforms into their geometry and merges them into a single mesh. The pieces must be
+ * unparented (or children of the group the result goes into) and share `material`. Every draw call costs
+ * CPU time in three.js, and shadows draw everything twice, so static pieces are merged.
+ */
+function mergeMeshes(pieces: THREE.Mesh[], material: THREE.Material, castShadow = false, receiveShadow = false): THREE.Mesh {
+  const geos = pieces.map((m) => {
+    m.updateMatrix();
+    return m.geometry.clone().applyMatrix4(m.matrix);
+  });
+  const merged = mergeGeometries(geos, false);
+  for (const g of geos) g.dispose();
+  if (!merged) throw new Error('mergeMeshes: geometries are not compatible');
+  const mesh = new THREE.Mesh(merged, material);
+  mesh.castShadow = castShadow;
+  mesh.receiveShadow = receiveShadow;
+  return mesh;
+}
+
 const WHITE = new THREE.Color(0xffffff);
 const WHITE_HOT = new THREE.Color(0xfff4d6);
 const FIRE = new THREE.Color(0xff7a1a);
 const FIRE_TRAIL = new THREE.Color(0xff9a2a);
-const SPLIT_PINK = new THREE.Color(0xff6b9d);
+/** Flame tongues: yellow core, orange body, a little red-orange at the tips. */
+const FLAME_TONES = [new THREE.Color(0xffc247), new THREE.Color(0xff8a2a), new THREE.Color(0xff8a2a), new THREE.Color(0xff4a2a)];
+const flameColor = new THREE.Color();
+/** Flame particles per second along an armed split-shot paddle. */
+const FLAME_RATE = 46;
 const ICE = new THREE.Color(0x9bf6ff);
+
+/**
+ * Rendering quality ladder, best first. Measured on an integrated GPU, almost the whole frame is
+ * post-processing (4x MSAA on a half-float target cost ~10 ms, full-resolution bloom ~7 ms, the scene
+ * itself ~1 ms), so the rungs trade exactly those: MSAA gives way to FXAA, bloom is rendered smaller,
+ * the shadow map shrinks. Only after that does the resolution itself drop.
+ */
+interface Rung {
+  samples: number;
+  fxaa: boolean;
+  /** Bloom resolution relative to the screen (0 = off). */
+  bloom: number;
+  shadow: number;
+}
+const RUNGS: readonly Rung[] = [
+  { samples: 4, fxaa: false, bloom: 1, shadow: 2048 },
+  { samples: 0, fxaa: true, bloom: 0.5, shadow: 1024 },
+  { samples: 0, fxaa: true, bloom: 0.35, shadow: 1024 },
+  { samples: 0, fxaa: true, bloom: 0, shadow: 1024 },
+];
+export type GraphicsMode = 'auto' | 'high' | 'medium' | 'low';
+/** Fixed choices of the Graphics setting: rung and render scale. */
+const MODE_RUNG: Record<Exclude<GraphicsMode, 'auto'>, { rung: number; scale: number }> = {
+  high: { rung: 0, scale: 1 },
+  medium: { rung: 1, scale: 1 },
+  low: { rung: 3, scale: 0.75 },
+};
+const MIN_SCALE = 0.6;
+/** Auto: frames slower than this (ms) for 1.5 s move one step down the ladder. */
+const SLOW_MS = 19;
+const GFX_KEY = 'ballistix.gfx.v1';
+
+function gpuName(gl: WebGLRenderingContext | WebGL2RenderingContext): string {
+  try {
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    return String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
+  } catch {
+    return '';
+  }
+}
+
+/** Where on the ladder to start, judged from the GPU's name (auto mode then corrects it). */
+function startRung(name: string): number {
+  if (/swiftshader|llvmpipe|software|basic render/i.test(name)) return 3;
+  const integrated = (/intel/i.test(name) && !/\barc\b/i.test(name)) || /mali|adreno|powervr|videocore|radeon(\(tm\))? graphics/i.test(name);
+  return integrated ? 1 : 0;
+}
+
+function loadGfx(gpu: string): { rung: number; scale: number } | null {
+  try {
+    const o = JSON.parse(localStorage.getItem(GFX_KEY) ?? 'null');
+    if (o && o.gpu === gpu && Number.isInteger(o.rung) && o.rung >= 0 && o.rung < RUNGS.length && o.scale >= MIN_SCALE && o.scale <= 1) return { rung: o.rung, scale: o.scale };
+  } catch {
+    /* storage unavailable */
+  }
+  return null;
+}
+
+function saveGfx(gpu: string, rung: number, scale: number): void {
+  try {
+    localStorage.setItem(GFX_KEY, JSON.stringify({ gpu, rung, scale }));
+  } catch {
+    /* ignore */
+  }
+}
 
 export class View {
   readonly renderer: THREE.WebGLRenderer;
@@ -370,12 +462,20 @@ export class View {
   private badges: ItemBadge[] = [];
   private fliers: Flier[] = [];
   private badgeTex = new Map<CrateKind, THREE.CanvasTexture>();
-  /** Adaptive resolution: render scale and a smoothed frame time. */
+  /** Graphics: current rung of the ladder, render scale, a smoothed frame time and the user's choice. */
+  private rung = 0;
   private quality = 1;
+  private gfxMode: GraphicsMode = 'auto';
+  private gpu = '';
   private frameMs = 16;
   private lastFrame = performance.now();
   private slowFor = 0;
   private fastFor = 0;
+  /** Seconds since the last change of graphics settings (a change needs a moment to settle). */
+  private settle = 0;
+  private fxaa: FXAAPass;
+  /** Ring effects are recycled: creating a material per ring costs a little on every hit. */
+  private ringPool: THREE.Mesh[] = [];
   /** True when the screen is wide enough to put the player cards beside the goals. */
   wide = false;
   private ringGeo = new THREE.RingGeometry(0.9, 1.0, 64);
@@ -405,13 +505,17 @@ export class View {
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.NoToneMapping; // tone mapping is applied by the OutputPass
 
-    const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 });
+    const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 0 });
     this.composer = new EffectComposer(this.renderer, rt);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     this.bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.32, 0.5, 0.92);
     this.composer.addPass(this.bloom);
     const out = new OutputPass();
     this.composer.addPass(out);
+    this.fxaa = new FXAAPass();
+    this.fxaa.enabled = false;
+    this.composer.addPass(this.fxaa);
+    this.gpu = gpuName(this.renderer.getContext());
 
     this.scene.background = skyTexture();
     this.buildLights();
@@ -431,7 +535,9 @@ export class View {
     this.serveRing.visible = false;
     this.scene.add(this.serveRing);
 
-    this.resize();
+    for (let i = 0; i < 6; i++) this.ringPool.push(this.makeRingMesh());
+
+    this.setGraphics(this.gfxMode);
     addEventListener('resize', () => this.resize());
     this.warmUp();
   }
@@ -488,10 +594,13 @@ export class View {
     const wallMat = new THREE.MeshStandardMaterial({ color: 0x46528f, roughness: 0.45, metalness: 0.2 });
     const pillarMat = new THREE.MeshStandardMaterial({ color: 0x56649f, roughness: 0.4, metalness: 0.25 });
 
+    const wallPieces: THREE.Mesh[] = [];
+    const pillarPieces: THREE.Mesh[] = [];
     for (let i = 0; i < 4; i++) {
       const side = SIDES[i];
       const seat = SEATS[i];
       const horizontal = side.t.x !== 0;
+      const trimPieces: THREE.Mesh[] = [];
       const trimMat = new THREE.MeshStandardMaterial({ color: seat.color, emissive: seat.color, emissiveIntensity: 1.4, roughness: 0.3 });
 
       for (const dir of [-1, 1]) {
@@ -501,37 +610,37 @@ export class View {
         const centre = (end + GOAL_HALF) / 2;
         const box = new THREE.Mesh(new RoundedBoxGeometry(horizontal ? len : 2 * WALL_R, WALL_HEIGHT, horizontal ? 2 * WALL_R : len, 3, 0.09), wallMat);
         box.position.set(side.w.x + side.t.x * centre * dir, WALL_HEIGHT / 2, side.w.y + side.t.y * centre * dir);
-        box.castShadow = true;
-        box.receiveShadow = true;
-        this.scene.add(box);
+        wallPieces.push(box);
 
         const trim = new THREE.Mesh(new THREE.BoxGeometry(horizontal ? len - 0.2 : 0.14, 0.08, horizontal ? 0.14 : len - 0.2), trimMat);
         trim.position.set(box.position.x, WALL_HEIGHT + 0.03, box.position.z);
-        this.scene.add(trim);
+        trimPieces.push(trim);
 
         // pillar at the goal edge
         const pillar = new THREE.Mesh(new THREE.CylinderGeometry(WALL_R + 0.03, WALL_R + 0.06, 1.5, 24), pillarMat);
         pillar.position.set(side.w.x + side.t.x * GOAL_HALF * dir, 0.75, side.w.y + side.t.y * GOAL_HALF * dir);
-        pillar.castShadow = true;
-        this.scene.add(pillar);
+        pillarPieces.push(pillar);
         const cap = new THREE.Mesh(new THREE.SphereGeometry(WALL_R + 0.04, 20, 12), trimMat);
         cap.position.set(pillar.position.x, 1.55, pillar.position.z);
-        this.scene.add(cap);
+        trimPieces.push(cap);
       }
+      this.scene.add(mergeMeshes(trimPieces, trimMat));
 
       // goal bay: recessed pad, glowing strip and a net wall
       const out = { x: -side.n.x, y: -side.n.y };
       const bayDepth = 3.2;
+      const bayGroup = new THREE.Group(); // everything behind the goal line: hidden when nobody plays this seat
+      this.scene.add(bayGroup);
       const bayMat = new THREE.MeshStandardMaterial({ color: 0x0f1530, emissive: seat.color, emissiveIntensity: 0.18, roughness: 0.7 });
       const bay = new THREE.Mesh(new THREE.BoxGeometry(horizontal ? 2 * GOAL_HALF + 0.6 : bayDepth, 0.2, horizontal ? bayDepth : 2 * GOAL_HALF + 0.6), bayMat);
       bay.position.set(side.w.x + out.x * (bayDepth / 2), -0.09, side.w.y + out.y * (bayDepth / 2));
       bay.receiveShadow = true;
-      this.scene.add(bay);
+      bayGroup.add(bay);
 
       const stripMat = new THREE.MeshStandardMaterial({ color: seat.color, emissive: seat.color, emissiveIntensity: 1.2, roughness: 0.3 });
       const strip = new THREE.Mesh(new THREE.BoxGeometry(horizontal ? 2 * GOAL_HALF : 0.22, 0.08, horizontal ? 0.22 : 2 * GOAL_HALF), stripMat);
       strip.position.set(side.w.x, 0.05, side.w.y);
-      this.scene.add(strip);
+      bayGroup.add(strip);
 
       const netMat = new THREE.MeshStandardMaterial({
         map: netTexture(seat.color),
@@ -545,7 +654,7 @@ export class View {
       const back = new THREE.Mesh(new THREE.BoxGeometry(horizontal ? 2 * GOAL_HALF + 0.6 : 0.3, 1.5, horizontal ? 0.3 : 2 * GOAL_HALF + 0.6), netMat);
       back.position.set(side.w.x + out.x * bayDepth, 0.75, side.w.y + out.y * bayDepth);
       back.castShadow = true;
-      this.scene.add(back);
+      bayGroup.add(back);
 
       // Lights the goal bay, not the playing field: short range, set back behind the goal line.
       const light = new THREE.PointLight(seat.color, 16, 8, 2);
@@ -557,27 +666,50 @@ export class View {
       barrier.group.position.set(side.w.x, 0, side.w.y);
       this.scene.add(barrier.group);
 
-      this.seatPlaceholders[i] = { bayMat, stripMat, light, barrier };
+      // A solid wall that closes the goal when this seat is not played (2 and 3 player matches).
+      const plug = new THREE.Group();
+      const plugBox = new THREE.Mesh(
+        new RoundedBoxGeometry(horizontal ? 2 * GOAL_HALF : 2 * WALL_R, WALL_HEIGHT, horizontal ? 2 * WALL_R : 2 * GOAL_HALF, 3, 0.09),
+        wallMat,
+      );
+      plugBox.position.set(side.w.x, WALL_HEIGHT / 2, side.w.y);
+      plugBox.castShadow = true;
+      plugBox.receiveShadow = true;
+      const plugTrim = new THREE.Mesh(new THREE.BoxGeometry(horizontal ? 2 * GOAL_HALF - 0.2 : 0.14, 0.08, horizontal ? 0.14 : 2 * GOAL_HALF - 0.2), trimMat);
+      plugTrim.position.set(side.w.x, WALL_HEIGHT + 0.03, side.w.y);
+      plug.add(plugBox, plugTrim);
+      plug.visible = false;
+      this.scene.add(plug);
+
+      this.seatPlaceholders[i] = { bayMat, stripMat, light, barrier, bayGroup, plug, trimMat };
     }
+
+    this.scene.add(mergeMeshes(wallPieces, wallMat, true, true), mergeMeshes(pillarPieces, pillarMat, true));
 
     // corner pillars
+    const cornerMat = new THREE.MeshStandardMaterial({ color: 0x3a447c, roughness: 0.4, metalness: 0.3 });
+    const cornerCapMat = new THREE.MeshStandardMaterial({ color: 0xcfe0ff, emissive: 0x8fb4ff, emissiveIntensity: 1.1 });
+    const cornerPillars: THREE.Mesh[] = [];
+    const cornerCaps: THREE.Mesh[] = [];
     for (const sx of [-1, 1]) {
       for (const sz of [-1, 1]) {
-        const p = new THREE.Mesh(new THREE.CylinderGeometry(0.46, 0.5, 1.5, 24), new THREE.MeshStandardMaterial({ color: 0x3a447c, roughness: 0.4, metalness: 0.3 }));
+        const p = new THREE.Mesh(new THREE.CylinderGeometry(0.46, 0.5, 1.5, 24));
         p.position.set(sx * H, 0.75, sz * H);
-        p.castShadow = true;
-        this.scene.add(p);
-        const cap = new THREE.Mesh(
-          new THREE.SphereGeometry(0.4, 20, 12),
-          new THREE.MeshStandardMaterial({ color: 0xcfe0ff, emissive: 0x8fb4ff, emissiveIntensity: 1.1 }),
-        );
+        cornerPillars.push(p);
+        const cap = new THREE.Mesh(new THREE.SphereGeometry(0.4, 20, 12));
         cap.position.set(sx * H, 1.55, sz * H);
-        this.scene.add(cap);
+        cornerCaps.push(cap);
       }
     }
+    this.scene.add(mergeMeshes(cornerPillars, cornerMat, true), mergeMeshes(cornerCaps, cornerCapMat));
   }
 
-  private seatPlaceholders: Record<number, { bayMat: THREE.MeshStandardMaterial; stripMat: THREE.MeshStandardMaterial; light: THREE.PointLight; barrier: Barrier }> = {};
+  private seatPlaceholders: Record<
+    number,
+    { bayMat: THREE.MeshStandardMaterial; stripMat: THREE.MeshStandardMaterial; light: THREE.PointLight; barrier: Barrier; bayGroup: THREE.Group; plug: THREE.Group; trimMat: THREE.MeshStandardMaterial }
+  > = {};
+  /** Seats nobody plays in this match. */
+  private vacant = [false, false, false, false];
 
   private buildBackdrop(): void {
     const mat = new THREE.MeshStandardMaterial({ color: 0x232a55, roughness: 0.9, flatShading: true });
@@ -659,6 +791,18 @@ export class View {
         add(new THREE.CylinderGeometry(0.025, 0.025, 0.4, 8), dark, 0, 2.15, 0);
         add(new THREE.SphereGeometry(0.09, 12, 8), new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: seat.color, emissiveIntensity: 2 }), 0, 2.38, 0);
     }
+    // The parts never move against each other (the whole body leans and squashes), so merge them by material.
+    const parts = new Map<THREE.Material, THREE.Mesh[]>();
+    for (const m of [...lean.children] as THREE.Mesh[]) {
+      const list = parts.get(m.material as THREE.Material) ?? [];
+      list.push(m);
+      parts.set(m.material as THREE.Material, list);
+    }
+    for (const [mat, list] of parts) {
+      for (const m of list) lean.remove(m);
+      lean.add(mergeMeshes(list, mat, true));
+      for (const m of list) m.geometry.dispose();
+    }
     char.rotation.y = Math.atan2(side.n.x, side.n.y);
     char.scale.setScalar(CHAR_SCALE);
     this.scene.add(char);
@@ -689,6 +833,7 @@ export class View {
       flash: 0,
       swing: 0,
       swingFx: false,
+      flame: 0,
     };
   }
 
@@ -854,6 +999,7 @@ export class View {
     }
     for (const b of this.badges) show(b.sprite);
     show(this.serveRing);
+    for (const m of this.ringPool) show(m);
     const kinds = Object.keys(CRATE_INFO) as CrateKind[];
     for (const k of kinds) {
       this.renderer.initTexture(this.badgeTexture(k));
@@ -874,6 +1020,14 @@ export class View {
     this.renderer.setRenderTarget(this.composer.renderTarget1);
     try {
       this.renderer.compile(this.scene, this.camera);
+      // Post-processing shaders (bloom, tone mapping, FXAA) compile on their first frame: do it now.
+      const fx = this.fxaa.enabled;
+      const bl = this.bloom.enabled;
+      this.fxaa.enabled = true;
+      this.bloom.enabled = true;
+      this.composer.render(0);
+      this.fxaa.enabled = fx;
+      this.bloom.enabled = bl;
     } finally {
       this.renderer.setRenderTarget(null);
       this.scene.remove(ball, crate);
@@ -893,6 +1047,34 @@ export class View {
     this.cineTarget = on ? 1 : 0;
   }
 
+  /** Which seats are in play: the others get a solid wall instead of a goal, and no paddle or character. */
+  setActive(active: boolean[]): void {
+    for (let i = 0; i < 4; i++) {
+      const vac = !active[i];
+      this.vacant[i] = vac;
+      const ph = this.seatPlaceholders[i];
+      ph.bayGroup.visible = !vac;
+      ph.plug.visible = vac;
+      // The wall trim next to a closed seat loses its colour.
+      ph.trimMat.color.set(vac ? 0x7d86b8 : SEATS[i].color);
+      ph.trimMat.emissive.set(vac ? 0x7d86b8 : SEATS[i].color);
+      ph.trimMat.emissiveIntensity = vac ? 0.25 : 1.4;
+      if (vac) this.hideSeat(i);
+    }
+  }
+
+  private hideSeat(seat: number): void {
+    const o = this.seats[seat];
+    o.bar.visible = false;
+    o.char.visible = false;
+    o.ice.visible = false;
+    o.barrier.group.visible = false;
+    o.barrier.on = 0;
+    o.light.intensity = 0; // the light stays in the scene (adding or removing one recompiles every material)
+    this.lifeTags[seat].sprite.visible = false;
+    this.badges[seat].sprite.visible = false;
+  }
+
   /** Clears transient effects when a new match starts. */
   reset(): void {
     for (const s of this.seats) {
@@ -906,6 +1088,11 @@ export class View {
     }
     for (const id of [...this.balls.keys()]) this.removeBall(id);
     for (const id of [...this.crates.keys()]) this.removeCrate(id);
+    for (const r of this.rings) {
+      r.mesh.visible = false;
+      this.ringPool.push(r.mesh);
+    }
+    this.rings.length = 0;
     for (const g of this.ghosts) {
       this.scene.remove(g.obj.mesh);
       g.obj.mat.dispose();
@@ -934,12 +1121,13 @@ export class View {
     const h = this.canvas.clientHeight || window.innerHeight;
     this.width = w;
     this.height = h;
-    const dpr = Math.max(0.75, Math.min(window.devicePixelRatio, 2) * this.quality);
+    const dpr = Math.max(0.5, Math.min(window.devicePixelRatio, 2) * this.quality);
     this.renderer.setPixelRatio(dpr);
     this.renderer.setSize(w, h, false);
     this.composer.setPixelRatio(dpr);
     this.composer.setSize(w, h);
-    this.bloom.setSize(w, h);
+    const bl = RUNGS[this.rung].bloom;
+    if (bl > 0) this.bloom.setSize(Math.max(8, w * bl), Math.max(8, h * bl));
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.particles.setViewport(h * dpr, FOV);
@@ -972,15 +1160,23 @@ export class View {
     return tmpColor.set(SEATS[seat].color).clone();
   }
 
-  private addRing(x: number, z: number, color: number, max: number, dur: number, opacity = 0.8): void {
+  private makeRingMesh(): THREE.Mesh {
     const mesh = new THREE.Mesh(
       this.ringGeo,
-      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }),
     );
     mesh.rotation.x = -Math.PI / 2;
+    mesh.visible = false;
+    this.scene.add(mesh);
+    return mesh;
+  }
+
+  private addRing(x: number, z: number, color: number, max: number, dur: number, opacity = 0.8): void {
+    const mesh = this.ringPool.pop() ?? this.makeRingMesh();
+    (mesh.material as THREE.MeshBasicMaterial).color.set(color);
     mesh.position.set(x, 0.06, z);
     mesh.scale.setScalar(0.1);
-    this.scene.add(mesh);
+    mesh.visible = true;
     this.rings.push({ mesh, t: 0, dur, max, opacity });
   }
 
@@ -1035,7 +1231,7 @@ export class View {
       case 'smash': {
         // Readable but gentle: a few warm sparks and a faint ring, no white flash.
         this.particles.burst(ev.x, ev.y, dim(new THREE.Color(0xff8a1f), 0.55), 12, 7, 0.28, 0.4, 2);
-        this.addRing(ev.x, ev.y, 0xffa33d, 3, 0.4, 0.35);
+        this.addRing(ev.x, ev.y, 0xffa33d, 2.2, 0.3, 0.12);
         this.seats[ev.seat].flash = 0.4;
         this.shake(0.08);
         break;
@@ -1078,7 +1274,7 @@ export class View {
         const gold = new THREE.Color(CRATE_INFO[ev.kind].color);
         this.particles.burst(ev.x, ev.y, new THREE.Color(0xc98a3d), 30, 8, 0.4, 0.9, 6);
         this.particles.burst(ev.x, ev.y, gold, 40, 9, 0.35, 1.0, 6);
-        this.addRing(ev.x, ev.y, SEATS[ev.seat].color, 5, 0.6);
+        this.addRing(ev.x, ev.y, SEATS[ev.seat].color, 3, 0.45, 0.14);
         this.shake(0.12);
         break;
       }
@@ -1157,6 +1353,10 @@ export class View {
     for (const p of sim.players) {
       const o = this.seats[p.seat];
       const side = SIDES[p.seat];
+      if (this.vacant[p.seat]) {
+        this.hideSeat(p.seat);
+        continue;
+      }
       o.squash = Math.max(0, o.squash - dt * 4);
       o.flash = Math.max(0, o.flash - dt * 3);
       o.swing = Math.max(0, o.swing - dt * 5);
@@ -1186,9 +1386,33 @@ export class View {
         o.barMat.emissive.lerp(WHITE_HOT, 0.45);
         o.barMat.emissiveIntensity = 1.15;
       }
-      if (p.fx.split > 0) {
-        o.barMat.emissive.lerp(SPLIT_PINK, 0.55 + 0.25 * Math.sin(this.time * 9));
-        o.barMat.emissiveIntensity = Math.max(o.barMat.emissiveIntensity, 1.3);
+      if (p.alive && p.fx.split > 0) {
+        // Armed split shot: the paddle smoulders. It keeps its own colour (just a gentle flicker in glow) and
+        // soft flames lick up in front of the bar. Dim on purpose: it must never hide the ball.
+        const flick = 0.5 + 0.5 * Math.sin(this.time * 23 + p.seat * 2) * Math.sin(this.time * 9.3 + p.seat);
+        o.barMat.emissiveIntensity += 0.06 + 0.12 * flick;
+        o.flame += dt * FLAME_RATE;
+        for (let n = 0; o.flame >= 1 && n < 4; o.flame -= 1, n++) {
+          const u = Math.random() * 2 - 1;
+          const along = u * p.h;
+          const bulge = PADDLE_CURVE * (1 - u * u);
+          flameColor.copy(FLAME_TONES[Math.floor(Math.random() * FLAME_TONES.length)]).multiplyScalar(0.62);
+          this.particles.emit(
+            cx + side.t.x * along + side.n.x * (bulge + 0.3),
+            0.62 + Math.random() * 0.15,
+            cz + side.t.y * along + side.n.y * (bulge + 0.3),
+            side.n.x * 0.3 + (Math.random() - 0.5) * 0.4,
+            1.3 + Math.random() * 1.3,
+            side.n.y * 0.3 + (Math.random() - 0.5) * 0.4,
+            flameColor,
+            0.6 + Math.random() * 0.35,
+            0.4 + Math.random() * 0.35,
+            -1.2,
+            1.6,
+          );
+        }
+      } else {
+        o.flame = 0;
       }
       if (p.alive && Math.abs(p.axis) < 0.05 && Math.abs(p.vs) > 5 && Math.random() < 0.7) {
         // Drifting: dust kicks up under the character's feet.
@@ -1390,8 +1614,8 @@ export class View {
       if (held) {
         const k = 1 - held.hold / SERVE_HOLD;
         this.serveRing.position.set(held.x, 0.05, held.y);
-        this.serveRing.scale.setScalar(2.2 - k * 1.5);
-        (this.serveRing.material as THREE.MeshBasicMaterial).opacity = 0.2 + k * 0.6;
+        this.serveRing.scale.setScalar(1.3 - k * 0.75);
+        (this.serveRing.material as THREE.MeshBasicMaterial).opacity = 0.1 + k * 0.32;
       }
     }
   }
@@ -1482,23 +1706,79 @@ export class View {
     }
   }
 
-  /** Lowers the render resolution when frames are slow, and raises it again when there is headroom. */
+  /** The Graphics setting. Auto starts from the GPU's class (or the last session's result) and steps down when frames are slow. */
+  setGraphics(mode: GraphicsMode): void {
+    this.gfxMode = mode;
+    if (mode === 'auto') {
+      const saved = loadGfx(this.gpu);
+      this.rung = saved ? saved.rung : startRung(this.gpu);
+      this.quality = saved ? saved.scale : 1;
+    } else {
+      this.rung = MODE_RUNG[mode].rung;
+      this.quality = MODE_RUNG[mode].scale;
+    }
+    this.applyRung();
+  }
+
+  /** A short description for the menu: the GPU in use and the current level. */
+  graphicsLabel(): string {
+    const names = ['High', 'Medium', 'Reduced', 'Minimal'];
+    const gpu = this.gpu.replace(/^ANGLE \(([^,]+), /, '').replace(/ \(0x[0-9a-f]+\).*$/i, '').replace(/\)$/, '') || 'unknown GPU';
+    const scale = this.quality < 0.99 ? ` · ${Math.round(this.quality * 100)}% resolution` : '';
+    return `${gpu} · ${names[this.rung]}${scale}`;
+  }
+
+  private applyRung(): void {
+    const r = RUNGS[this.rung];
+    const rt = this.composer.renderTarget2; // the one the scene is drawn into
+    if (rt.samples !== r.samples) {
+      rt.samples = r.samples;
+      rt.dispose(); // re-created with the new sample count on the next frame
+    }
+    this.bloom.enabled = r.bloom > 0;
+    this.fxaa.enabled = r.fxaa;
+    const sh = this.sun.shadow;
+    if (sh.mapSize.x !== r.shadow) {
+      sh.mapSize.set(r.shadow, r.shadow);
+      sh.map?.dispose();
+      sh.map = null;
+    }
+    this.settle = 0;
+    this.slowFor = 0;
+    this.fastFor = 0;
+    this.frameMs = 14;
+    this.resize();
+  }
+
+  /** Steps down (cheaper, then smaller) when frames are slow, and back up in resolution when there is plenty of room. */
   private adaptQuality(): void {
     const now = performance.now();
-    const ms = Math.min(100, now - this.lastFrame);
+    const raw = now - this.lastFrame;
     this.lastFrame = now;
-    this.frameMs += (ms - this.frameMs) * 0.05;
+    // Background tabs and long stalls are not measurements of the game's speed.
+    if (document.hidden || raw > 1000) return;
+    const ms = Math.min(100, raw);
     const step = ms / 1000;
-    this.slowFor = this.frameMs > 24 ? this.slowFor + step : 0;
-    this.fastFor = this.frameMs < 13 ? this.fastFor + step : 0;
-    if (this.slowFor > 1.5 && this.quality > 0.5) {
-      this.quality = Math.max(0.5, this.quality - 0.15);
-      this.slowFor = 0;
-      this.resize();
-    } else if (this.fastFor > 6 && this.quality < 1) {
-      this.quality = Math.min(1, this.quality + 0.15);
-      this.fastFor = 0;
-      this.resize();
+    this.settle += step;
+    this.frameMs += (ms - this.frameMs) * 0.05;
+    if (this.gfxMode !== 'auto' || this.settle < 2.5) return;
+    this.slowFor = this.frameMs > SLOW_MS ? this.slowFor + step : 0;
+    // Back up (resolution only; a feature step would cost more than we can predict): needs 9 ms or better.
+    this.fastFor = this.frameMs < 9 && this.quality < 1 ? this.fastFor + step : 0;
+    if (this.slowFor > 1.5) {
+      if (this.rung < 2) this.rung++;
+      else if (this.quality > MIN_SCALE + 0.01) this.quality = Math.max(MIN_SCALE, this.quality - 0.13);
+      else if (this.rung < RUNGS.length - 1) this.rung++;
+      else {
+        this.slowFor = 0;
+        return;
+      }
+      saveGfx(this.gpu, this.rung, this.quality);
+      this.applyRung();
+    } else if (this.fastFor > 10) {
+      this.quality = Math.min(1, this.quality + 0.13);
+      saveGfx(this.gpu, this.rung, this.quality);
+      this.applyRung();
     }
   }
 
@@ -1508,8 +1788,8 @@ export class View {
       r.t += dt;
       const k = r.t / r.dur;
       if (k >= 1) {
-        this.scene.remove(r.mesh);
-        (r.mesh.material as THREE.Material).dispose();
+        r.mesh.visible = false;
+        this.ringPool.push(r.mesh);
         this.rings.splice(i, 1);
         continue;
       }

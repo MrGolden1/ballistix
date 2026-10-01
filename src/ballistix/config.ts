@@ -50,6 +50,9 @@ export function ballCap(alive: number): number {
  */
 export const OWNER_TIME = 5;
 
+/** Real-time seconds the whole game freezes when a smash lands (hit-stop, for weight). 0 turns it off. */
+export const SMASH_HITSTOP = 0.07;
+
 /** Smash: a swing that hits any incoming ball within reach in front of the paddle. */
 export const SMASH_WINDOW = 0.2;
 export const SMASH_CD = 0.9;
@@ -133,6 +136,12 @@ export const CRATE_INFO: Record<CrateKind, CrateInfo> = {
 export interface MatchConfig {
   /** 0 = bots only (menu demo), 1 = one human (bottom), 2 = two humans (bottom + top). */
   humans: 0 | 1 | 2;
+  /** Total players, humans plus bots (2 to 4). Seats nobody plays are closed with a solid wall. Default 4. */
+  players?: number;
+  /** The seats in play. Derived from `players` when absent; an online host sends it so everyone agrees. */
+  active?: number[];
+  /** Display names per seat; an empty or missing entry means the seat's own name. */
+  names?: string[];
   difficulty: Difficulty;
   lives: number;
   /** Whether item crates spawn. */
@@ -147,6 +156,24 @@ export function humanSeats(humans: number): number[] {
   if (humans >= 2) return [0, 2];
   if (humans === 1) return [0];
   return [];
+}
+
+/** Bots fill free seats in this order: opposite the first player, then the sides. */
+const FILL_ORDER = [0, 2, 1, 3];
+
+/** The seats in play: every human's seat, plus bots up to `total` players (never fewer than the humans). */
+export function seatsInPlay(humanSeatList: number[], total: number): number[] {
+  const out = [...humanSeatList];
+  for (const seat of FILL_ORDER) {
+    if (out.length >= total) break;
+    if (!out.includes(seat)) out.push(seat);
+  }
+  return out.sort((a, b) => a - b);
+}
+
+/** A seat's display name in this match. */
+export function seatName(cfg: MatchConfig, seat: number): string {
+  return cfg.names?.[seat] || SEATS[seat].name;
 }
 
 export function clamp(v: number, lo: number, hi: number): number {

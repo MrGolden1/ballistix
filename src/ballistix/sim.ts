@@ -43,6 +43,7 @@ import {
   ballCap,
   clamp,
   humanSeats,
+  seatsInPlay,
   type CrateKind,
   type ItemKind,
   type MatchConfig,
@@ -63,6 +64,8 @@ export interface PlayerStats {
 
 export interface PlayerState {
   seat: number;
+  /** False for a seat nobody plays in a 2 or 3 player match: its side is a solid wall. */
+  active: boolean;
   human: boolean;
   /** Online guest: the paddle position comes from the network, the sim does not move it. */
   external: boolean;
@@ -222,12 +225,14 @@ export class Sim {
   constructor(readonly cfg: MatchConfig) {
     this.rng = mulberry32(cfg.seed);
     const humans = cfg.seats ?? humanSeats(cfg.humans);
+    const active = cfg.active ?? seatsInPlay(humans, cfg.players ?? 4);
     this.players = [0, 1, 2, 3].map((seat) => ({
       seat,
-      human: humans.includes(seat),
+      active: active.includes(seat),
+      human: active.includes(seat) && humans.includes(seat),
       external: false,
-      lives: cfg.lives,
-      alive: true,
+      lives: active.includes(seat) ? cfg.lives : 0,
+      alive: active.includes(seat),
       s: 0,
       vs: 0,
       axis: 0,
@@ -499,7 +504,7 @@ export class Sim {
       const s = SIDES[i];
       const closed = this.isClosed(i);
       if (closed) {
-        this.collideSegment(b, s.w.x - s.t.x * H, s.w.y - s.t.y * H, s.w.x + s.t.x * H, s.w.y + s.t.y * H, i, true);
+        this.collideSegment(b, s.w.x - s.t.x * H, s.w.y - s.t.y * H, s.w.x + s.t.x * H, s.w.y + s.t.y * H, i, this.players[i].active);
       } else {
         this.collideSegment(b, s.w.x - s.t.x * H, s.w.y - s.t.y * H, s.w.x - s.t.x * GOAL_HALF, s.w.y - s.t.y * GOAL_HALF, i, false);
         this.collideSegment(b, s.w.x + s.t.x * GOAL_HALF, s.w.y + s.t.y * GOAL_HALF, s.w.x + s.t.x * H, s.w.y + s.t.y * H, i, false);

@@ -1,5 +1,7 @@
-import { SEATS } from '../ballistix/config';
+import { SEATS, seatsInPlay } from '../ballistix/config';
+import { cleanName, escapeHtml } from '../core/names';
 import { OnlineGuest, OnlineHost } from './online';
+import { reachableFromInternet, type Reach } from './peer';
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 
@@ -15,6 +17,13 @@ async function copyText(el: HTMLTextAreaElement): Promise<boolean> {
   }
 }
 
+/** One sentence on whether people on other networks can reach this computer, from the addresses found. */
+function reachNote(reach: Reach): string {
+  return reachableFromInternet(reach)
+    ? 'Your public address was found, so friends on other networks can connect.'
+    : 'No public address was found (this network may block the lookup), so only players on the same network can connect. Try another network, such as a phone hotspot, for internet play.';
+}
+
 /** The "Play online" screen: host a room or join one by swapping two codes. */
 export class Lobby {
   host: OnlineHost | null = null;
@@ -25,10 +34,23 @@ export class Lobby {
   onGuestConnected: (guest: OnlineGuest) => void = () => {};
   /** Back to the main menu. */
   onBack: () => void = () => {};
+  /** The 'players in the match' menu setting, and the player's saved name. */
+  getPlayers: () => number = () => 4;
+  getName: () => string = () => '';
+  onName: (name: string) => void = () => {};
 
   private root = $('online');
 
   constructor() {
+    const nameEl = $('on-name') as HTMLInputElement;
+    nameEl.addEventListener('input', () => {
+      // Stored as typed-and-cleaned; the box itself is left alone so spaces can be typed.
+      const name = cleanName(nameEl.value);
+      this.onName(name);
+      this.host?.setName(name);
+      this.guest?.setName(name);
+    });
+    nameEl.addEventListener('blur', () => (nameEl.value = cleanName(nameEl.value)));
     $('on-host').addEventListener('click', () => this.startHosting());
     $('on-join').addEventListener('click', () => this.view('join'));
     $('on-back').addEventListener('click', () => this.leave());
@@ -49,6 +71,7 @@ export class Lobby {
   }
 
   show(): void {
+    ($('on-name') as HTMLInputElement).value = this.getName();
     this.root.classList.remove('hidden');
     if (!this.host && !this.guest) this.view('choose');
   }
@@ -87,6 +110,7 @@ export class Lobby {
 
   private startHosting(): void {
     this.host = new OnlineHost();
+    this.host.name = this.getName();
     this.host.onChange = () => this.renderPeers();
     this.view('host');
     this.renderPeers();
@@ -100,8 +124,9 @@ export class Lobby {
     ($('on-answer') as HTMLTextAreaElement).value = '';
     this.status('on-hoststatus', 'Preparing an invite code...');
     try {
-      out.value = await this.host.invite();
-      this.status('on-hoststatus', 'Copy the invite code and send it to your friend.');
+      const { code, reach } = await this.host.invite();
+      out.value = code;
+      this.status('on-hoststatus', `Copy the invite code and send it to your friend. ${reachNote(reach)}`, reachableFromInternet(reach) ? 'ok' : '');
     } catch (e) {
       this.status('on-hoststatus', (e as Error).message, 'err');
     }
@@ -131,11 +156,18 @@ export class Lobby {
 
   private renderPeers(): void {
     if (!this.host) return;
-    const rows = [0, 2, 1, 3].map((seat) => {
-      const taken = seat === 0 || this.host!.guests.some((g) => g.seat === seat);
-      const who = seat === 0 ? 'You (host)' : taken ? 'Friend' : 'Bot';
-      return `<div class="padrow wide ${taken ? 'ok' : ''}"><b style="color:${SEATS[seat].css}">${SEATS[seat].name}</b><span>${who}</span><em>${taken ? 'connected' : 'open seat'}</em></div>`;
-    });
+    // Friends always get a seat; bots fill up to the menu's "players in the match".
+    const total = Math.max(2, this.getPlayers(), this.host.seats().length);
+    const inPlay = seatsInPlay(this.host.seats(), total);
+    const rows = [0, 2, 1, 3]
+      .filter((seat) => inPlay.includes(seat))
+      .map((seat) => {
+        const guest = this.host!.guests.find((g) => g.seat === seat);
+        const taken = seat === 0 || !!guest;
+        const name = seat === 0 ? this.host!.name : guest?.name ?? '';
+        const who = seat === 0 ? `${name || 'You'} (host)` : guest ? name || 'Friend' : 'Bot';
+        return `<div class="padrow wide ${taken ? 'ok' : ''}"><b style="color:${SEATS[seat].css}">${escapeHtml(SEATS[seat].name)}</b><span>${escapeHtml(who)}</span><em>${taken ? 'connected' : 'bot'}</em></div>`;
+      });
     $('on-peers').innerHTML = rows.join('');
     const n = this.host.guests.length;
     ($('on-start') as HTMLButtonElement).disabled = n === 0;
@@ -157,11 +189,13 @@ export class Lobby {
     try {
       this.guest?.close();
       this.status('on-joinstatus', 'Preparing your reply code...');
-      const { guest, reply } = await OnlineGuest.join(code);
+      const { guest, reply, reach } = await OnlineGuest.join(code);
       this.guest = guest;
+      guest.name = cleanName(($('on-name') as HTMLInputElement).value);
       ($('on-replycode') as HTMLTextAreaElement).value = reply;
-      this.status('on-joinstatus', 'Copy the reply code and send it to the host. Waiting for the host to connect...');
+      this.status('on-joinstatus', `Copy the reply code and send it to the host. Waiting for the host to connect... ${reachNote(reach)}`, reachableFromInternet(reach) ? 'ok' : '');
       guest.onOpen = () => {
+        guest.sendName();
         this.status('on-joinstatus', 'Connected! Waiting for the host to start the match.', 'ok');
         this.onGuestConnected(guest);
       };

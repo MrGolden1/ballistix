@@ -3,7 +3,8 @@ import { Gamepads, glyphs, type PadEvent, type PadKind, type Rumble } from './co
 import { Input } from './core/input';
 import { mulberry32 } from './core/rng';
 import { Bot } from './ballistix/bot';
-import { CRATE_INFO, SEATS, SIDES, humanSeats, type MatchConfig } from './ballistix/config';
+import { CRATE_INFO, SEATS, SIDES, SMASH_HITSTOP, humanSeats, seatName, seatsInPlay, type MatchConfig } from './ballistix/config';
+import { cleanName, escapeHtml } from './core/names';
 import { Hud } from './ballistix/hud';
 import { Sim, movePaddle, type SimEvent } from './ballistix/sim';
 import { UI, type Settings } from './ballistix/ui';
@@ -18,6 +19,16 @@ const MAX_STEPS_PER_FRAME = 12;
 const MAX_EXTRAPOLATE = 0.12;
 
 type Mode = 'menu' | 'match';
+
+/** A match configuration received from the host: keep only sane values (names are cleaned, seats checked). */
+function sanitizeConfig(cfg: MatchConfig): MatchConfig {
+  const seatsOk = (a: unknown): a is number[] => Array.isArray(a) && a.length <= 4 && a.every((x) => Number.isInteger(x) && x >= 0 && x <= 3);
+  const lives = Number.isFinite(cfg.lives) ? Math.max(1, Math.min(99, Math.round(cfg.lives))) : 5;
+  const active = seatsOk(cfg.active) && cfg.active.length >= 2 ? cfg.active : undefined;
+  const seats = seatsOk(cfg.seats) ? cfg.seats : undefined;
+  const names = Array.isArray(cfg.names) ? cfg.names.slice(0, 4).map(cleanName) : undefined;
+  return { ...cfg, lives, active, seats, names, humans: cfg.humans === 2 ? 2 : 1 };
+}
 
 interface RemoteInput {
   axis: number;
@@ -72,6 +83,7 @@ class App {
   private rtt = 0;
   private pingTimer = 0;
   private hintTimer = 0;
+  private gfxInfoTimer = 0;
 
   constructor() {
     this.view = new View(document.getElementById('gl') as HTMLCanvasElement);
@@ -95,6 +107,11 @@ class App {
       else this.ui.showMenu();
     };
     this.lobby.onHostStart = (host) => this.startOnlineHost(host);
+    this.lobby.getPlayers = () => this.ui.settings.players;
+    this.lobby.getName = () => this.ui.settings.name;
+    this.lobby.onName = (name) => this.ui.setName(name);
+    this.ui.onGraphics = (mode) => this.view.setGraphics(mode);
+    this.view.setGraphics(this.ui.settings.graphics);
     this.lobby.onGuestConnected = (guest) => this.attachGuest(guest);
     this.audio.musicOn = this.ui.settings.music;
     this.audio.sfxOn = this.ui.settings.sfx;
@@ -154,6 +171,12 @@ class App {
     this.slowmo = 0;
     this.netEvents = [];
     this.view.reset();
+    this.view.setActive(this.sim.players.map((p) => p.active));
+  }
+
+  /** Display name of a seat in the current match. */
+  private nameOf(seat: number): string {
+    return seatName(this.sim.cfg, seat);
   }
 
   private startDemo(): void {
@@ -187,13 +210,27 @@ class App {
   }
 
   private startMatch(s: Settings): void {
-    this.beginMatch({ humans: s.humans, difficulty: s.difficulty, lives: s.lives, crates: s.crates === 1, seed: (Math.random() * 1e9) | 0 });
+    this.beginMatch({ humans: s.humans, players: s.players, difficulty: s.difficulty, lives: s.lives, crates: s.crates === 1, seed: (Math.random() * 1e9) | 0 });
   }
 
   private startOnlineHost(host: OnlineHost): void {
     this.net = host;
     const s = this.ui.settings;
-    const cfg: MatchConfig = { humans: 1, difficulty: s.difficulty, lives: s.lives, crates: s.crates === 1, seed: (Math.random() * 1e9) | 0, seats: host.seats() };
+    // Friends always get a seat; bots fill up to the "players in the match" setting.
+    const humans = host.seats();
+    const total = Math.max(2, s.players, humans.length);
+    host.name = s.name;
+    const cfg: MatchConfig = {
+      humans: 1,
+      players: total,
+      active: seatsInPlay(humans, total),
+      names: host.names(),
+      difficulty: s.difficulty,
+      lives: s.lives,
+      crates: s.crates === 1,
+      seed: (Math.random() * 1e9) | 0,
+      seats: humans,
+    };
     host.onGuestMsg = (seat, msg) => this.onGuestMsg(seat, msg);
     host.onGuestLeft = (seat) => this.onGuestLeft(seat);
     this.remote.clear();
@@ -305,7 +342,7 @@ class App {
   private pingText(): string {
     if (this.net?.role === 'guest') return `Ping ${Math.round(this.rtt)} ms`;
     if (this.net?.role === 'host') {
-      const parts = [...this.remote.entries()].map(([seat, r]) => `${SEATS[seat].name} ${r.rtt} ms`);
+      const parts = [...this.remote.entries()].map(([seat, r]) => `${this.nameOf(seat)} ${r.rtt} ms`);
       return parts.length ? `Ping: ${parts.join(' · ')}` : '';
     }
     return '';
@@ -367,7 +404,7 @@ class App {
     p.external = false;
     p.human = false;
     this.bots[seat] = new Bot(seat, this.sim.cfg.difficulty, this.botRng);
-    this.hud.toast(`<b>${SEATS[seat].name}</b> disconnected · a bot takes over`, SEATS[seat].css);
+    this.hud.toast(`<b>${escapeHtml(this.nameOf(seat))}</b> disconnected · a bot takes over`, SEATS[seat].css);
   }
 
   private onHostMsg(msg: HostMsg): void {
@@ -376,13 +413,13 @@ class App {
     switch (msg.k) {
       case 'welcome':
       case 'lobby':
-        if (this.mode !== 'match') this.lobby.setGuestStatus(`Connected as ${SEATS[guest.seat]?.name ?? 'a player'} (${guest.seats.length || 2} players in the room). Waiting for the host to start...`);
+        if (this.mode !== 'match') this.lobby.setGuestStatus(`Connected as ${guest.names[guest.seat] || SEATS[guest.seat]?.name || 'a player'} (${guest.seats.length || 2} players in the room). Waiting for the host to start...`);
         break;
       case 'start':
         this.guestSmash = 0;
         this.guestItem = 0;
         this.lastSnap = performance.now();
-        this.beginMatch(msg.cfg);
+        this.beginMatch(sanitizeConfig(msg.cfg));
         break;
       case 'snap':
         if (this.mode !== 'match') return;
@@ -472,6 +509,13 @@ class App {
     if (this.mode === 'match') {
       this.hud.update(this.sim);
       this.hud.setWide(this.view.wide);
+    }
+    if (this.mode === 'menu') {
+      this.gfxInfoTimer -= dt;
+      if (this.gfxInfoTimer <= 0) {
+        this.gfxInfoTimer = 0.5;
+        this.ui.setGraphicsInfo(this.view.graphicsLabel());
+      }
     }
     this.input.endFrame();
     requestAnimationFrame((t) => this.frame(t));
@@ -663,7 +707,7 @@ class App {
       case 'smash':
         this.rumbleSeat(ev.seat, 'smash');
         sfx('smash');
-        this.hitstop = 0.07;
+        this.hitstop = SMASH_HITSTOP;
         this.view.shake(0.3);
         break;
       case 'swing':
@@ -697,7 +741,7 @@ class App {
         this.slowmo = 0.45;
         this.view.shake(0.3);
         sfx('elim');
-        if (live) this.popAtGoal(ev.seat, `${SEATS[ev.seat].name.toUpperCase()} IS OUT`, SEATS[ev.seat].css, true);
+        if (live) this.popAtGoal(ev.seat, `${this.nameOf(ev.seat).toUpperCase()} IS OUT`, SEATS[ev.seat].css, true);
         break;
       case 'crateSpawn':
         sfx('spawn');
@@ -719,7 +763,7 @@ class App {
         this.view.celebrate(ev.seat);
         if (live) {
           sfx('win');
-          this.hud.countdown(ev.seat >= 0 ? `${SEATS[ev.seat].name} wins!` : 'Draw');
+          this.hud.countdown(ev.seat >= 0 ? `${this.nameOf(ev.seat)} wins!` : 'Draw');
           window.setTimeout(() => {
             if (this.mode === 'match' && this.sim.phase === 'over') {
               this.hud.hide();
