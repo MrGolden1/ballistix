@@ -1,0 +1,220 @@
+# Ballistix
+
+A 3D four-player arena game for the browser, inspired by the *Ballistix* minigame in Crash Bash.
+Each player defends one goal. Balls fly around the arena; every goal you concede costs a life,
+and the last player standing wins. Built with **Three.js + TypeScript + Vite**. All art and
+sound are generated in code, so there are no asset files.
+
+> Fan project. It uses original characters, art and sound and no assets from the original game.
+
+## Run
+
+```bash
+npm install
+npm run dev        # http://localhost:5173
+npm run build      # type-check + production build into dist/ (static files, host anywhere)
+npm run build:single  # one self-contained dist-single/index.html (send it to a friend, open in Chrome/Edge)
+npm run preview    # serve the production build
+npm test           # unit tests (rules, collisions, bots)
+```
+
+## Controls
+
+| | Keyboard | PlayStation pad | Xbox pad |
+|---|---|---|---|
+| Move | `A` `D` or `←` `→` | left stick / D-pad | left stick / D-pad |
+| Smash | `Space`, `W` or `↑` | ✕ or R2 | A or RT |
+| Use item | `Shift`, `E`, `S` or `↓` | □, △, ○, L1 or R1 | X, Y, B, LB or RB |
+| Pause / resume | `P` or `Esc` | OPTIONS | MENU |
+| Menus | arrow keys + `Enter` | D-pad / stick + ✕, ○ back | D-pad / stick + A, B back |
+| Music / sound | `M` / `N` (also in the menu and pause screen) | | |
+
+Two players on one keyboard: P1 (bottom) `A` `D` move, `W` smash, `S` item; P2 (top) `←` `→` move,
+`↑` smash, `↓` item.
+
+Every screen (menu, pause, results) works with a controller or the arrow keys: up/down picks a row,
+left/right changes an option, ✕ / Enter confirms. The pause screen has Music, Sound and Vibration switches.
+
+## Controllers (PS4 / Xbox / generic)
+
+Use **Chrome or Edge**. Connect the controller over USB or Bluetooth and press any button. No driver
+or DS4Windows is needed: the browser reports a DualShock 4 in the standard layout.
+
+- **Join by pressing a button.** The first controller to press a button becomes P1 and the next becomes P2,
+  whatever order they were plugged in. Choose "2 Players" in the menu so the second controller can join.
+  The menu shows which controller is on which seat.
+- **Vibration:** hits, smashes, items, goals and eliminations rumble the controller of the player they happen to
+  (toggle it in the menu or the pause screen).
+- **Disconnects:** if a player's controller drops out mid-match the game pauses and says so.
+- **DS4Windows:** it also works. DS4Windows turns every DS4 into a virtual Xbox 360 pad; if the real DS4 stays
+  visible the browser would see each controller twice, so the game detects that and hides the real entries
+  (the menu tells you when it does). Turning on "Hide DS4 Controller" in DS4Windows has the same effect.
+  If you mix one real Xbox pad with one real DS4 the DS4 is hidden by mistake; that mix is not supported.
+- **Button guides follow the device you use.** Touch the controller and every hint (menu, pause, results, your panel) shows its buttons; press a key and they switch back to the keyboard. PlayStation pads show ✕ ○ □ △ (in their colours), Xbox pads A B X Y, Nintendo pads their own labels (confirm = B).
+- **Bluetooth:** works the same as USB in Chrome/Edge (pair it in Windows Bluetooth settings first:
+  hold SHARE + PS until the light bar flashes). Expect slightly more input delay than a cable.
+
+## Online play (no game server)
+
+Ballistix connects browsers directly to each other with WebRTC. There is no game server and no
+account: you swap two codes once, then the game data goes straight between your computers.
+
+**Getting the game to your friends.** Run `npm run build:single` and send them
+`dist-single/index.html` (about 0.7 MB). They open it in Chrome or Edge, straight from their
+downloads folder: no install, no server. (Or put `dist/` on any free static host.)
+
+**Connecting (up to 4 players):**
+1. Host: *Play online* → *Host a room*. An invite code appears; copy it and send it (WhatsApp, Telegram...).
+2. Friend: *Play online* → *Join a room* → paste the invite → *Create reply code*; send the reply back.
+3. Host: paste the reply → *Connect*. Repeat for more friends (one invite per friend), then *Start online match*.
+
+Bots fill the empty seats, and the host's menu settings (bot skill, crates, lives) are used. Every
+player sees their own goal at the bottom of the screen, with "right" meaning right on their screen.
+Pause is shared: anyone can pause and resume for everyone. If a friend leaves, a bot takes over their seat.
+
+**How it works.** The host runs the real game. Each guest moves its own paddle locally (so it reacts
+instantly) and sends its position and button presses; the host sends a compact snapshot of the
+arena every frame plus the game events (sounds, effects, scores). Snapshots use an unordered,
+no-retransmit channel (a lost one is simply replaced by the next); events use a reliable channel.
+
+**Lag compensation.** Guests measure the round trip to the host (shown bottom-right as *Ping*) and draw
+the balls half a round trip ahead, so they see roughly where the balls are on the host right now; the
+host likewise moves each guest's paddle on by half a round trip. Between snapshots guests keep the
+balls moving at their current velocity. Bandwidth is small: a snapshot is about 1 KB, ~60 per second.
+
+| Ping (round trip) | How it plays |
+|---|---|
+| under 50 ms | like local play |
+| 50-100 ms | good; fast smashes need a little anticipation |
+| 100-150 ms | playable, you will notice it on fast balls |
+| over 150 ms | hard; the ball can be ~1 unit away from where you see it |
+
+**Limits, honestly:**
+- To find each other across the internet the browsers ask a public **STUN** server (Google /
+  Cloudflare) for their public address. That is a tiny lookup; no game data goes through it.
+- On the same Wi-Fi it always works. Across the internet it works on most home connections, but
+  some networks (strict / symmetric NAT, many mobile hotspots, carrier-grade NAT) cannot be
+  connected directly. Those would need a relay (TURN) server, which this game does not use. If
+  "Connect" never finishes, try another network (e.g. one player on home Wi-Fi instead of mobile data).
+- The guest's paddle is trusted by the host. Fine between friends, not cheat-proof.
+- Latency matters like in any online game; within the same country it plays well.
+
+## HUD
+
+- **Lives above every goal:** a big number in the goal's colour; it jumps when that player concedes and disappears when they are eliminated (the goal is sealed by the force field).
+- **Scoreboard:** one row per player (lives as a number + bar, active effects such as SHIELD, FROZEN, LAST STAND, and the item they hold). On wide screens it sits in the left gutter, otherwise in a strip at the top. You are listed first.
+- **Who holds what:** a player who holds an item has its icon floating above their character, a coloured chip with the icon on the scoreboard, and (for you) the item in your panel with its button. When someone collects a crate, its icon flies to them.
+- **Your panel:** smash readiness and your item with the button that uses it (one panel per local player).
+- Game events (pickups, extra balls, goals) appear as short labels where they happen instead of pop-up messages; only rare system messages (controllers, connections) use a message.
+
+## Game rules
+
+- 4 seats: bottom, right, top, left. Bots fill every seat that has no human.
+- Everyone starts with 3, 5 or 10 lives. A ball that gets into your goal costs one life.
+  At 0 lives you are out and an electric force field seals your goal (balls bounce off it with a zap). The last player standing wins.
+- **Paddles are curved and have momentum.** Where the ball hits the paddle decides where it goes (centre
+  = straight back, edges = sharp angles). Let go of the stick and the paddle drifts to a stop; push the
+  other way to stop quickly.
+
+### Physics notes
+
+- Fixed 120 Hz steps; balls never tunnel through walls even at top speed (tested).
+- Walls and posts reflect with angle in = angle out and keep the speed. Every ball always moves at
+  exactly its base speed plus its smash boost (tested on long random matches).
+- Paddle hits are deliberately "arcade": the hit position on the curved paddle decides the direction
+  (mirror-symmetric, tested), plus a little of the paddle's own motion. That gives players control
+  instead of depending on the incoming angle.
+- There is no spin or curve: between bounces every ball flies in a perfectly straight line, so shots
+  are predictable (tested). Only paddles and walls change a ball's direction.
+
+### Several balls
+
+Every ball is checked against every paddle each step, so a paddle can return two balls at once.
+A smash swing lasts 0.2 s and smashes **every** ball that reaches it during that time (tested), not
+just the first one.
+
+### Smash
+
+Press smash as a ball comes close: the swing reaches about 1.7 units in front of your paddle, so the ball
+does not have to touch it. A smashed ball flies much faster and at a sharper angle, in a straight line like every other ball.
+Cooldown 0.9 s.
+
+### How many balls?
+
+A "ball director" decides. It starts with 2 balls. Every 9 seconds without a goal it adds one more
+("Too quiet... +1 BALL!"), after 75 s of play it keeps one extra in rotation, and a goal resets the pressure.
+The cap depends on who is left: 5 balls with 4 players, 4 with 3, 3 with 2. Serves are spaced out so two
+balls never pop out at once.
+
+### Items guide
+
+*Items & how to play* (main menu and pause screen) shows a looping animation for every item and for smash and grabbing crates.
+
+### Item crates
+
+Crates show what is inside. **Only a ball you touched last can collect one**, so aim your shots at
+the crate you want. You hold one item at a time (a new one replaces it) and use it when you choose:
+
+| Item | Effect |
+|---|---|
+| Shield | seals your goal for 6 s (save it for a ball you cannot reach) |
+| Big Paddle | paddle 60% longer for 10 s |
+| Freeze | everyone else moves at less than half speed for 4 s |
+| Split Shot | your next hit splits into 3 balls |
+| Extra Life | instant +1 life (or a short shield if you are at full lives) |
+
+Extra Life crates are rare unless somebody has already lost a life.
+
+### Comeback: Last Stand
+
+On your last life your paddle is 20% longer and smash recharges 50% faster.
+
+## Performance
+
+- The whole game simulation costs about 10 microseconds per step (120 steps per second, 4 players,
+  7 balls): roughly 1 ms of CPU per second of play. Unknown command: "test"
+
+
+Did you mean this?
+  npm test # Test a package
+To see a list of supported npm commands, run:
+  npm help prints this measurement.
+- The hot collision code does not allocate memory, so there are no garbage-collection hiccups.
+- Particles cost nothing when none are alive.
+- Adaptive resolution: if frames get slow (under ~40 fps) the render resolution steps down, and it
+  steps back up when there is headroom. A strong GPU stays at full resolution.
+
+## Architecture
+
+```
+src/
+  main.ts                 app loop: fixed 120 Hz sim, input, event routing
+  style.css               menu / HUD / results styling
+  core/
+    rng.ts                seeded PRNG
+    input.ts              keyboard, merged with the gamepad manager
+    gamepad.ts            layouts, join-by-press, DS4Windows de-duplication, menu nav, rumble
+    audio.ts              Web Audio synth: SFX + music loop
+  ballistix/
+    config.ts             arena geometry, tuning constants, shared types
+    sim.ts                pure game rules (no DOM, no three.js)  <- unit tested
+    bot.ts                bot AI (interception prediction, per-shot error, difficulty)
+    view.ts               three.js scene, characters, effects, camera, bloom
+    particles.ts          GPU point-sprite particles
+    hud.ts, ui.ts         DOM overlays
+tests/sim.test.ts         drift, curved paddle, smash reach, straight paths, ball director, items, last stand, bot matches
+tests/gamepad.test.ts     layouts, duplicate filtering, seats, actions, disconnects, menu repeat, rumble
+```
+
+The simulation is deterministic for a given seed and knows nothing about rendering. Inputs are just
+`axis`, `smashReq` and `itemReq` on each player, so a human, a bot or (later) a network peer all drive it
+the same way. It emits events (`paddle`, `smash`, `goal`, `pickup`, ...) that the view, HUD and audio
+react to. That keeps the rules testable and makes adding more minigames a matter of writing another `sim` + `view` pair.
+
+## Tuning
+
+Game feel lives in `src/ballistix/config.ts` (goal width, paddle size, speed and drift, smash reach,
+ball director, item durations)
+and `PROFILES` in `src/ballistix/bot.ts` (bot reaction time, error, speed). `npm test` prints the
+average length of bot-vs-bot matches per difficulty, which is a quick way to check balance after
+changing numbers.

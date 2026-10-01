@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#070b24">
+<title>Ballistix</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 64 64%27%3E%3Ccircle cx=%2732%27 cy=%2732%27 r=%2728%27 fill=%27%23ff8a1f%27/%3E%3Ccircle cx=%2724%27 cy=%2724%27 r=%278%27 fill=%27%23fff%27 opacity=%27.55%27/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+<canvas id="gl"></canvas>
+
+<div id="hud" class="hidden" aria-live="polite">
+  <div id="board"></div>
+  <div id="me"></div>
+  <div id="popups"></div>
+  <div id="toasts"></div>
+  <div id="countdown"></div>
+  <div id="hudhint">P / Esc pause</div>
+</div>
+
+<!--
+  Controller / arrow-key navigation: every element with data-nav is one row of the screen.
+  seg = left/right changes the option, row = left/right picks a button, btn = a single button.
+-->
+<main id="menu" class="screen">
+  <section class="panel">
+    <h1 class="logo">BALLISTIX</h1>
+    <p class="tag">Four goals. One arena. Last one standing wins.</p>
+
+    <div class="group" data-nav="seg">
+      <label>Players</label>
+      <div class="seg" data-key="humans">
+        <button data-value="1" type="button">1 Player</button>
+        <button data-value="2" type="button">2 Players</button>
+      </div>
+    </div>
+    <div class="group" data-nav="seg">
+      <label>Bot skill</label>
+      <div class="seg" data-key="difficulty">
+        <button data-value="easy" type="button">Easy</button>
+        <button data-value="normal" type="button">Normal</button>
+        <button data-value="hard" type="button">Hard</button>
+      </div>
+    </div>
+    <div class="group" data-nav="seg">
+      <label>Item crates</label>
+      <div class="seg" data-key="crates">
+        <button data-value="1" type="button">On</button>
+        <button data-value="0" type="button">Off</button>
+      </div>
+    </div>
+    <div class="group" data-nav="seg">
+      <label>Lives</label>
+      <div class="seg" data-key="lives">
+        <button data-value="3" type="button">3</button>
+        <button data-value="5" type="button">5</button>
+        <button data-value="10" type="button">10</button>
+      </div>
+    </div>
+
+    <button id="start" class="cta" type="button" data-nav="btn" data-default>START MATCH <kbd data-k="start">Enter</kbd></button>
+    <button id="online-btn" class="ghost" type="button" data-nav="btn">PLAY ONLINE</button>
+    <button id="guide-btn" class="ghost" type="button" data-nav="btn">ITEMS &amp; HOW TO PLAY</button>
+
+    <div class="controls">
+      <div id="ctl-keys"></div>
+      <div id="pads" class="pads"></div>
+      <div class="power-row" id="powerlegend"></div>
+    </div>
+    <div class="toggles" data-nav="row">
+      <button class="mini" type="button" data-toggle="music">♪ Music</button>
+      <button class="mini" type="button" data-toggle="sfx">🔊 Sound</button>
+      <button class="mini" type="button" data-toggle="vibration">≋ Vibration</button>
+    </div>
+  </section>
+</main>
+
+<div id="online" class="screen hidden">
+  <section class="panel online">
+    <h2>Play online</h2>
+    <p class="note">A direct browser-to-browser connection: no game server. You and your friends swap two codes once (WhatsApp, Telegram, e-mail...).</p>
+    <div id="on-choose">
+      <button id="on-host" class="cta" type="button" data-nav="btn" data-default>HOST A ROOM</button>
+      <button id="on-join" class="ghost" type="button" data-nav="btn">JOIN A ROOM</button>
+      <button id="on-back" class="ghost" type="button" data-nav="btn">Back</button>
+    </div>
+    <div id="on-hostbox" class="hidden">
+      <ol class="steps">
+        <li><b>Invite a friend.</b> <button id="on-invite" class="mini" type="button">Create invite code</button>
+          <textarea id="on-offer" readonly placeholder="The invite code appears here"></textarea>
+          <button id="on-copy-offer" class="mini" type="button">Copy invite code</button></li>
+        <li><b>Paste their reply code:</b>
+          <textarea id="on-answer" placeholder="Paste the reply code here"></textarea>
+          <button id="on-connect" class="mini" type="button">Connect</button></li>
+      </ol>
+      <div id="on-peers" class="pads"></div>
+      <p id="on-hoststatus" class="note"></p>
+      <p class="padnote">Uses the menu settings (bot skill, item crates, lives). Bots fill the empty seats. Repeat the two steps for up to 3 friends.</p>
+      <button id="on-start" class="cta" type="button" disabled>START ONLINE MATCH</button>
+      <button id="on-closeroom" class="ghost" type="button">Close room</button>
+    </div>
+    <div id="on-joinbox" class="hidden">
+      <ol class="steps">
+        <li><b>Paste the host's invite code:</b>
+          <textarea id="on-invitecode" placeholder="Paste the invite code here"></textarea>
+          <button id="on-makereply" class="mini" type="button">Create reply code</button></li>
+        <li><b>Send this reply code back to the host:</b>
+          <textarea id="on-replycode" readonly placeholder="The reply code appears here"></textarea>
+          <button id="on-copy-reply" class="mini" type="button">Copy reply code</button></li>
+      </ol>
+      <p id="on-joinstatus" class="note"></p>
+      <button id="on-leave" class="ghost" type="button">Leave</button>
+    </div>
+  </section>
+</div>
+
+<div id="pause" class="screen hidden">
+  <section class="panel small">
+    <h2>Paused</h2>
+    <p id="pause-note" class="note"></p>
+    <button id="resume" class="cta" type="button" data-nav="btn" data-default>RESUME <kbd data-k="resume">P</kbd></button>
+    <div class="toggles stack" data-nav="row">
+      <button class="mini" type="button" data-toggle="music">♪ Music</button>
+      <button class="mini" type="button" data-toggle="sfx">🔊 Sound</button>
+      <button class="mini" type="button" data-toggle="vibration">≋ Vibration</button>
+    </div>
+    <button id="guide-btn2" class="ghost" type="button" data-nav="btn">Items &amp; how to play</button>
+    <button id="quit" class="ghost" type="button" data-nav="btn">Quit to menu <kbd data-k="quit">Q</kbd></button>
+  </section>
+</div>
+
+<div id="results" class="screen hidden">
+  <section class="panel results">
+    <p class="kicker">Match over</p>
+    <h2 id="r-title">Winner</h2>
+    <table id="r-table"></table>
+    <p class="r-time" id="r-time"></p>
+    <button id="rematch" class="cta" type="button" data-nav="btn" data-default>REMATCH <kbd data-k="rematch">Enter</kbd></button>
+    <button id="r-menu" class="ghost" type="button" data-nav="btn">Menu <kbd data-k="rmenu">Esc</kbd></button>
+  </section>
+</div>
+
+<div id="guide" class="screen hidden">
+  <section class="panel guide">
+    <header>
+      <h2>Items &amp; how to play</h2>
+      <button id="guide-back" class="cta" type="button" data-nav="btn" data-default>BACK <kbd data-k="back">Esc</kbd></button>
+    </header>
+    <div id="guide-grid"></div>
+  </section>
+</div>
+
+<noscript>Ballistix needs JavaScript and WebGL.</noscript>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
