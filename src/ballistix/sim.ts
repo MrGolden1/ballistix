@@ -8,6 +8,8 @@ import {
   BIG_SCALE,
   BOOST_DECAY,
   CALM_STEP,
+  CATCHUP_FULL,
+  CRATE_HELP,
   COUNTDOWN_SECONDS,
   ESCALATE_AT,
   FX_BIG,
@@ -149,7 +151,7 @@ export type SimEvent =
   | { t: 'ballFade'; id: number; x: number; y: number }
   | { t: 'win'; seat: number };
 
-const CRATE_R = 0.7;
+export const CRATE_R = 0.7;
 const TIMED: readonly TimedEffect[] = ['big', 'shield', 'chill', 'split'];
 const PADDLE_SEGMENTS = 8;
 
@@ -215,6 +217,8 @@ export class Sim {
   /** Seconds since the last goal; drives the ball director. */
   sinceGoal = 0;
   winner = -1;
+  /** Item help ledger, per seat: crates owed (target shares of every crate collected) minus crates collected. */
+  readonly crateDue = [0, 0, 0, 0];
 
   private rng: () => number;
   private pending: PendingServe[] = [];
@@ -734,9 +738,16 @@ export class Sim {
     this.crateTimer -= dt;
     if (this.crateTimer > 0 || this.crates.length >= 2) return;
     this.crateTimer = 7 + this.rng() * 4;
+    const pullTo = this.catchUpSeat();
     for (let attempt = 0; attempt < 12; attempt++) {
-      const a = this.rng() * Math.PI * 2;
-      const r = 2.5 + this.rng() * 4; // out of the serve spot, still well inside the arena
+      let a = this.rng() * Math.PI * 2;
+      let r = 2.5 + this.rng() * 4; // out of the serve spot, still well inside the arena
+      if (pullTo >= 0 && attempt < 6) {
+        // Catch-up: on the helped player's side, 2.5 to 4.5 units in front of their paddle.
+        const w = SIDES[pullTo].w;
+        a = Math.atan2(w.y, w.x) + (a / Math.PI - 1) * 0.7;
+        r = 4.5 + (r - 2.5) * 0.5;
+      }
       const x = Math.cos(a) * r;
       const y = Math.sin(a) * r;
       if (this.balls.some((b) => Math.hypot(b.x - x, b.y - y) < 2.5)) continue;
@@ -750,13 +761,15 @@ export class Sim {
 
   /** Only a ball its owner hit directly (and that has not touched another ball) can collect a crate. */
   private collideCrates(b: Ball): void {
-    if (b.owner < 0 || !this.players[b.owner].alive) return;
+    if (b.owner < 0 || !this.crates.length || !this.players[b.owner].alive) return;
+    const p = this.players[b.owner];
+    const reach = BALL_R + CRATE_R + (p.human && this.helpOn() ? CRATE_HELP[this.cfg.difficulty].reach * this.need(p.seat) : 0);
     for (const c of this.crates) {
       if (c.dead) continue;
-      if (Math.hypot(b.x - c.x, b.y - c.y) >= BALL_R + CRATE_R) continue;
+      if (Math.hypot(b.x - c.x, b.y - c.y) >= reach) continue;
       c.dead = true;
-      const p = this.players[b.owner];
       p.stats.crates++;
+      this.creditCrate(p.seat);
       let replaced: ItemKind | null = null;
       if (c.kind === 'life') {
         if (p.lives < this.cfg.lives) p.lives++;
@@ -767,6 +780,39 @@ export class Sim {
       }
       this.events.push({ t: 'pickup', id: c.id, x: c.x, y: c.y, kind: c.kind, seat: p.seat, replaced });
     }
+  }
+
+  /** Item help runs only when people play against bots. */
+  private helpOn(): boolean {
+    let humans = 0;
+    let bots = 0;
+    for (const p of this.players) if (p.alive) p.human ? humans++ : bots++;
+    return humans > 0 && bots > 0;
+  }
+
+  /** Books a pickup: everyone alive was owed their target share of it, the collector got it. */
+  private creditCrate(seat: number): void {
+    if (!this.helpOn()) return;
+    const target = CRATE_HELP[this.cfg.difficulty].target;
+    let total = 0;
+    for (const p of this.players) if (p.alive) total += p.human ? target : 1;
+    for (const p of this.players) if (p.alive) this.crateDue[p.seat] += (p.human ? target : 1) / total;
+    this.crateDue[seat] -= 1;
+  }
+
+  /** How much item help a player gets: 0 when not behind their share, 1 at CATCHUP_FULL crates behind. */
+  private need(seat: number): number {
+    return clamp(this.crateDue[seat] / CATCHUP_FULL, 0, 1);
+  }
+
+  /** The human furthest behind their target share, if the catch-up pull picks them for this crate; else -1. */
+  private catchUpSeat(): number {
+    if (!this.helpOn()) return -1;
+    let seat = -1;
+    for (const p of this.players) if (p.alive && p.human && this.crateDue[p.seat] > 0 && (seat < 0 || this.crateDue[p.seat] > this.crateDue[seat])) seat = p.seat;
+    if (seat < 0) return -1;
+    const chance = CRATE_HELP[this.cfg.difficulty].pull * this.need(seat);
+    return this.rng() < chance ? seat : -1;
   }
 
   // --- end of match --------------------------------------------------------------

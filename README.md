@@ -183,6 +183,35 @@ can collect. Aim your own shots at the crate you want. You hold one item at a ti
 
 Extra Life crates are rare unless somebody has already lost a life.
 
+### Item help for human players
+
+Bots rarely miss, so they return more balls and, with them, collect more crates. In matches that have bots
+the game quietly helps people catch up (always on, nothing to set; matches with only people, or only bots,
+are untouched):
+
+- Every crate collected is **owed** to the players alive at that moment by a target share: a human counts as
+  1.4 bots on Easy, 1.2 on Normal and 1.0 on Hard (`CRATE_HELP` in `config.ts`).
+- A human who has collected **less than they are owed** gets help that grows with how far behind they are:
+  - **reach**: their ball collects a crate from a little farther away (at most 0.35 units, under a ball's
+    radius, so it still looks like a hit);
+  - **pull**: new crates tend to spawn on their side, 2.5 to 4.5 units in front of their paddle, where their
+    own returns pass first (28% of such crates go to that player, against 16% at the far side).
+- A human who is ahead gets no help and is never held back. Bots lose about 5% of their crates.
+
+How it was tuned, with simulated matches (seat 0 played by "human-like" bots that miss more and never aim at
+crates, against real bots; FAIR = crates compared with an equal share of every crate collected while
+alive, 1.00 = the same as a bot; 1,500 matches per row, unseen seeds):
+
+| Difficulty (target) | Beginner | Average | Skilled | Human win rate change |
+|---|---|---|---|---|
+| Easy (1.4)   | 1.07 → 1.28 | 1.17 → 1.44 | 1.26 → 1.50 | +1 to +5 points |
+| Normal (1.2) | 0.91 → 1.08 | 0.97 → 1.18 | 1.02 → 1.24 | +1 to +4 points |
+| Hard (1.0)   | 0.91 → 1.00 | 0.98 → 1.07 | 1.00 → 1.12 | none |
+
+Three players: 1.04 → 1.22; two players: 0.98 → 1.05 (one bot covers the whole field, so placement helps
+less). Items change who wins only a little, so the help evens out items without deciding matches.
+`npm run lab:crates` reruns the experiment after changing numbers.
+
 ### Comeback: Last Stand
 
 On your last life your paddle is 20% longer and smash recharges 50% faster.
@@ -242,6 +271,8 @@ src/
 tests/sim.test.ts         drift, curved paddle, smash reach, straight paths, ball director, items, last stand, bot matches
 tests/players.test.ts     2/3 player matches (closed sides, bots, serves), seat filling, player-name cleaning
 tests/net.test.ts         invite/reply codes (round trip, chat-app mangling, wrong code messages), reach, snapshots
+tests/items.test.ts       item help: off without bots or people, the owed-crates ledger, reach, catch-up spawns
+scripts/crate-lab.ts      simulated matches that measure item help (npm run lab:crates)
 tests/gamepad.test.ts     layouts, duplicate filtering, seats, actions, disconnects, menu repeat, rumble
 ```
 
@@ -256,4 +287,4 @@ Game feel lives in `src/ballistix/config.ts` (goal width, paddle size, speed and
 ball director, item durations)
 and `PROFILES` in `src/ballistix/bot.ts` (bot reaction time, error, speed). `npm test` prints the
 average length of bot-vs-bot matches per difficulty, which is a quick way to check balance after
-changing numbers.
+changing numbers. `npm run lab:crates` checks the item help (`CRATE_HELP`) the same way.

@@ -7,7 +7,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc",
-    "build:single": "tsc && vite build --mode single"
+    "build:single": "tsc && vite build --mode single",
+    "lab:crates": "vite-node scripts/crate-lab.ts"
   },
   "type": "module",
   "devDependencies": {

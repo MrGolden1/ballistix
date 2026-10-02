@@ -77,6 +77,35 @@ export const SPLIT_BALL_LIFE = 10;
 export const SPLIT_SPREAD = 0.38; // radians between the split balls
 
 export type Difficulty = 'easy' | 'normal' | 'hard';
+
+/**
+ * Item help for human players, in matches that have bots (always on, nothing to set).
+ * Bots rarely miss, so they return more balls and collect more crates than people do.
+ *
+ * Every crate collected is "owed" to the players alive at that moment by target share (a human counts as
+ * `target` bots). A human who has collected less than they are owed gets two invisible helps, growing with
+ * how far behind they are and full at CATCHUP_FULL crates behind:
+ * - reach: their ball collects a crate from a little farther away (a forgiving hitbox);
+ * - pull: new crates tend to spawn on their side, 2.5 to 4.5 units in front of their paddle, where their own
+ *   returns pass first (measured: 28% of such crates go to that player, against 16% at the far side).
+ * A human who is ahead gets no help and is never held back. Tuned with simulated matches (README, "Item help").
+ */
+export interface CrateHelp {
+  /** Extra pickup distance at full help (world units; ball radius 0.42, crate half size 0.55). */
+  reach: number;
+  /** A human's fair share of crates, as a multiple of a bot's. */
+  target: number;
+  /** Chance at full help that a new crate spawns on the side of the human furthest behind. */
+  pull: number;
+}
+
+export const CRATE_HELP: Record<Difficulty, CrateHelp> = {
+  easy: { reach: 0.35, target: 1.4, pull: 0.7 },
+  normal: { reach: 0.3, target: 1.2, pull: 0.75 },
+  hard: { reach: 0.15, target: 1.0, pull: 0.6 },
+};
+/** Crates a human must be behind their share for full help. */
+export const CATCHUP_FULL = 0.5;
 /** Items are held and used with the item button. */
 export type ItemKind = 'shield' | 'big' | 'freeze' | 'split';
 /** What a crate can contain. Extra Life applies instantly. */
