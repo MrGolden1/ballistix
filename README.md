@@ -5,6 +5,8 @@ Each player defends one goal. Balls fly around the arena; every goal you concede
 and the last player standing wins. Built with **Three.js + TypeScript + Vite**. All art and
 sound are generated in code, so there are no asset files.
 
+**Play in your browser:** https://mrgolden1.github.io/ballistix/
+
 > Fan project. It uses original characters, art and sound and no assets from the original game.
 
 ## Run
