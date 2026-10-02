@@ -1827,10 +1827,12 @@ export class View {
     this.camera.position.set(Math.sin(az) * Math.cos(elev) * d, Math.sin(elev) * d, Math.cos(az) * Math.cos(elev) * d);
 
     this.trauma = Math.max(0, this.trauma - dt * 1.6);
+    // Smooth wobble (a few overlapping sines), not a new random spot every frame: per-frame jumps read as stutter.
     const sh = this.trauma * this.trauma * 0.9;
-    this.camera.position.x += (Math.random() - 0.5) * sh;
-    this.camera.position.y += (Math.random() - 0.5) * sh;
-    this.camera.position.z += (Math.random() - 0.5) * sh;
+    const t = this.time * 31;
+    this.camera.position.x += (Math.sin(t) * 0.6 + Math.sin(t * 2.3 + 1.7) * 0.4) * 0.5 * sh;
+    this.camera.position.y += (Math.sin(t * 1.3 + 0.6) * 0.6 + Math.sin(t * 2.9 + 4.1) * 0.4) * 0.5 * sh;
+    this.camera.position.z += (Math.sin(t * 1.7 + 2.9) * 0.6 + Math.sin(t * 2.1 + 5.3) * 0.4) * 0.5 * sh;
     // Wide screens: aim a little toward the near goal, which perspective makes the largest.
     const off = this.wide ? 0.9 * (1 - cine) : 0;
     const ox = Math.sin(az) * off;

@@ -50,8 +50,11 @@ export function ballCap(alive: number): number {
  */
 export const OWNER_TIME = 5;
 
-/** Real-time seconds the whole game freezes when a smash lands (hit-stop, for weight). 0 turns it off. */
-export const SMASH_HITSTOP = 0.07;
+/**
+ * Real-time seconds the whole game freezes when a smash lands (hit-stop). Off: players read the
+ * freeze as lag. The sound, rumble, sparks and a short camera shake carry the weight instead.
+ */
+export const SMASH_HITSTOP = 0;
 
 /** Smash: a swing that hits any incoming ball within reach in front of the paddle. */
 export const SMASH_WINDOW = 0.2;

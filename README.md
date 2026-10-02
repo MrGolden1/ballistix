@@ -217,8 +217,8 @@ On your last life your paddle is 20% longer and smash recharges 50% faster.
 - **Laptops with two GPUs.** Windows often runs the browser on the weak integrated GPU. If the game
   feels slow, open *Settings → System → Display → Graphics*, add Edge or Chrome, and choose *High performance*.
 - Effect rings are recycled instead of creating a material each time.
-- Smash hit-stop: a smash freezes the game for 70 ms on purpose, to give it weight (`SMASH_HITSTOP` in
-  `config.ts`; set it to 0 to turn it off).
+- No smash freeze: the earlier 70 ms hit-stop read as lag, so it is off (`SMASH_HITSTOP` in `config.ts`).
+  Camera shake is a smooth wobble rather than a random jump every frame, which also looked like stutter.
 
 ## Architecture
 

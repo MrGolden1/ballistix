@@ -708,7 +708,7 @@ class App {
         this.rumbleSeat(ev.seat, 'smash');
         sfx('smash');
         this.hitstop = SMASH_HITSTOP;
-        this.view.shake(0.3);
+        this.view.shake(0.2);
         break;
       case 'swing':
         sfx('swing');
