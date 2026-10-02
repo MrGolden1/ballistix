@@ -7,6 +7,12 @@ sound are generated in code, so there are no asset files.
 
 **Play in your browser:** https://mrgolden1.github.io/ballistix/
 
+<p align="center">
+  <a href="https://mrgolden1.github.io/ballistix/trailer.mp4"><img src="docs/trailer.gif" width="270" alt="Ballistix trailer: real gameplay"></a>
+  <br>
+  <sub>▶ <a href="https://mrgolden1.github.io/ballistix/trailer.mp4">Watch the 30-second trailer with sound</a> (real gameplay)</sub>
+</p>
+
 > Fan project. It uses original characters, art and sound and no assets from the original game.
 
 ## Run

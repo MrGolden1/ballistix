@@ -101,6 +101,7 @@ button:focus-visible { outline: 3px solid #9bd0ff; outline-offset: 2px; }
 body.navmode .group.focus .seg { outline: 2px solid #9bd0ff; outline-offset: 2px; }
 body.navmode .group.focus label { color: #9bd0ff; }
 body.navmode .cta.focus, body.navmode .ghost.focus { outline: 3px solid #9bd0ff; outline-offset: 3px; filter: brightness(1.12); }
+body.navmode .star.focus { outline: 2px solid #9bd0ff; outline-offset: 2px; color: var(--ink); }
 body.navmode .toggles .mini.focus { outline: 2px solid #9bd0ff; outline-offset: 2px; color: var(--ink); }
 .toggles { display: flex; gap: 8px; margin-top: 14px; }
 .mini { flex: 1; padding: 8px; font-size: 12px; font-weight: 700; color: var(--muted); background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 9px; cursor: pointer; }
@@ -233,3 +234,9 @@ kbd.ps.triangle { color: #6be3b0; }
 .gcard h3 { margin: 10px 0 4px; font-size: 14px; letter-spacing: 0.08em; color: var(--c); display: flex; align-items: center; gap: 8px; }
 .gcard h3 img { width: 22px; height: 22px; border-radius: 5px; }
 .gcard p { margin: 0; font-size: 12px; line-height: 1.5; color: var(--muted); }
+
+/* Menu footer: a small, friendly request for a GitHub star. */
+.star { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 16px; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255, 210, 63, 0.35); background: rgba(255, 210, 63, 0.07); color: var(--muted); font-size: 13px; text-decoration: none; transition: background 0.15s, color 0.15s; }
+.star b { color: #ffd23f; font-weight: 800; }
+.star:hover { background: rgba(255, 210, 63, 0.14); color: var(--ink); }
+.star-icon { color: #ffd23f; font-size: 16px; line-height: 1; }
